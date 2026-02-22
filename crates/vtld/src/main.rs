@@ -7,6 +7,7 @@ use tracing::{error, info};
 use iscsi_target::target::{Target, TargetServer};
 use smc::MediaChanger;
 use ssc::TapeDrive;
+use ssc::media::geometry::LtoGeneration;
 use vtld::admin::{AdminState, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
@@ -80,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(&serial));
+        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
     }
