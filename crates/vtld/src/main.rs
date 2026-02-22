@@ -6,6 +6,7 @@ use tracing::{error, info};
 
 use iscsi_target::target::{Target, TargetServer};
 use smc::MediaChanger;
+use ssc::TapeDrive;
 use vtld::admin::{AdminState, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
@@ -80,9 +81,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start iSCSI target
-    let changer = MediaChanger::new(&config.library.model, &config.library.serial);
+    let media_barcodes: Vec<String> = config.library.media.iter().map(|m| m.barcode.clone()).collect();
+    let changer = MediaChanger::new(
+        &config.library.model,
+        &config.library.serial,
+        config.library.drives as u16,
+        config.library.slots as u16,
+        &media_barcodes,
+    );
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
     iscsi_target.add_lun(0, Arc::new(changer));
+
+    let drive = TapeDrive::new("DRIVE001");
+    iscsi_target.add_lun(1, Arc::new(drive));
 
     let iscsi_addr = format!("{}:{}", config.listen.host, config.iscsi.port);
     let iscsi_server = TargetServer::new(iscsi_target);

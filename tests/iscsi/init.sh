@@ -167,6 +167,124 @@ else
     die "INQUIRY response does not contain QUANTUM vendor"
 fi
 
+# ──────────────────────────────────────────────
+# MTX changer tests
+# ──────────────────────────────────────────────
+
+log "=== MTX changer tests ==="
+
+# Step 1: mtx status — verify library layout and media
+log "running mtx status..."
+MTX_STATUS=$(mtx -f "$CHANGER_DEV" status 2>&1)
+MTX_RC=$?
+log "mtx status output:"
+echo "$MTX_STATUS"
+
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx status failed with rc=$MTX_RC"
+fi
+
+# Verify we see the drive and slots
+if echo "$MTX_STATUS" | grep -q "Data Transfer Element"; then
+    log "SUCCESS: mtx sees data transfer element"
+else
+    die "mtx status missing Data Transfer Element"
+fi
+
+if echo "$MTX_STATUS" | grep -q "Storage Element"; then
+    log "SUCCESS: mtx sees storage elements"
+else
+    die "mtx status missing Storage Elements"
+fi
+
+# Verify media present in slot 1 (mtx uses 1-based slots)
+if echo "$MTX_STATUS" | grep -q "Storage Element 1:Full"; then
+    log "SUCCESS: slot 1 has media"
+else
+    die "slot 1 should have media"
+fi
+
+# Step 2: load slot 1 -> drive 0
+log "loading slot 1 into drive 0..."
+MTX_LOAD=$(mtx -f "$CHANGER_DEV" load 1 0 2>&1)
+MTX_RC=$?
+log "mtx load output: $MTX_LOAD (rc=$MTX_RC)"
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx load failed with rc=$MTX_RC"
+fi
+log "SUCCESS: load slot 1 -> drive 0"
+
+# Step 3: verify drive has media
+log "verifying drive 0 is full..."
+MTX_STATUS=$(mtx -f "$CHANGER_DEV" status 2>&1)
+echo "$MTX_STATUS"
+if echo "$MTX_STATUS" | grep "Data Transfer Element 0:Full"; then
+    log "SUCCESS: drive 0 is Full after load"
+else
+    die "drive 0 should be Full after load"
+fi
+
+# Verify slot 1 is now empty
+if echo "$MTX_STATUS" | grep "Storage Element 1:Empty"; then
+    log "SUCCESS: slot 1 is Empty after load"
+else
+    die "slot 1 should be Empty after load"
+fi
+
+# Step 4: unload drive 0 -> slot 1
+log "unloading drive 0 to slot 1..."
+MTX_UNLOAD=$(mtx -f "$CHANGER_DEV" unload 1 0 2>&1)
+MTX_RC=$?
+log "mtx unload output: $MTX_UNLOAD (rc=$MTX_RC)"
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx unload failed with rc=$MTX_RC"
+fi
+log "SUCCESS: unload drive 0 -> slot 1"
+
+# Step 5: verify drive empty, slot full
+log "verifying state after unload..."
+MTX_STATUS=$(mtx -f "$CHANGER_DEV" status 2>&1)
+echo "$MTX_STATUS"
+if echo "$MTX_STATUS" | grep "Data Transfer Element 0:Empty"; then
+    log "SUCCESS: drive 0 is Empty after unload"
+else
+    die "drive 0 should be Empty after unload"
+fi
+
+if echo "$MTX_STATUS" | grep "Storage Element 1:Full"; then
+    log "SUCCESS: slot 1 is Full after unload"
+else
+    die "slot 1 should be Full after unload"
+fi
+
+# Step 6: transfer slot 1 -> slot 3
+log "transferring media from slot 1 to slot 3..."
+MTX_TRANSFER=$(mtx -f "$CHANGER_DEV" transfer 1 3 2>&1)
+MTX_RC=$?
+log "mtx transfer output: $MTX_TRANSFER (rc=$MTX_RC)"
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx transfer failed with rc=$MTX_RC"
+fi
+log "SUCCESS: transfer slot 1 -> slot 3"
+
+# Step 7: verify media moved
+log "verifying state after transfer..."
+MTX_STATUS=$(mtx -f "$CHANGER_DEV" status 2>&1)
+echo "$MTX_STATUS"
+if echo "$MTX_STATUS" | grep "Storage Element 1:Empty"; then
+    log "SUCCESS: slot 1 is Empty after transfer"
+else
+    die "slot 1 should be Empty after transfer"
+fi
+
+if echo "$MTX_STATUS" | grep "Storage Element 3:Full"; then
+    log "SUCCESS: slot 3 is Full after transfer"
+else
+    die "slot 3 should be Full after transfer"
+fi
+
+log "=== All MTX tests passed ==="
+
 # Logout
 log "logging out..."
 iscsiadm -m node --logout 2>/dev/null || true

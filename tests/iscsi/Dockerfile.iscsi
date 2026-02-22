@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     open-iscsi \
     sg3-utils \
     lsscsi \
+    mtx \
     iproute2 \
     kmod \
     initramfs-tools \

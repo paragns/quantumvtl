@@ -90,7 +90,11 @@ library:
   data_dir: "$VTLD_DATA_DIR/data"
   drives: 1
   slots: 4
-  media: []
+  media:
+    - barcode: "TEST01L9"
+      capacity_bytes: 18000000000000
+    - barcode: "TEST02L9"
+      capacity_bytes: 18000000000000
 
 users:
   - username: admin
