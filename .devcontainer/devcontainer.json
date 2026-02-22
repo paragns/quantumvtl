@@ -1,0 +1,26 @@
+{
+        "name": "quantumvtl",
+        "build": {
+                "dockerfile": "Dockerfile"
+        },
+        "customizations": {
+                "vscode": {
+                        "settings": {},
+                        "extensions": [
+                                "anysphere.cpptools",
+                                "gitlab.gitlab-workflow",
+                                "rust-lang.rust-analyzer"
+                        ]
+                }
+        },
+        "mounts": [
+                "source=quantumvtl-worktrees,target=/worktrees,type=volume",
+                "source=quantumvtl-build,target=/build,type=volume"
+        ],
+        "appPort": [],
+        "forwardPorts": [],
+        "runArgs": [],
+        "privileged": true,
+        "workspaceMount": "source=${localWorkspaceFolder},target=/quantumvtl,type=bind",
+        "workspaceFolder": "/quantumvtl"
+}
