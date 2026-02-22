@@ -16,6 +16,9 @@ use tokio::sync::{Notify, broadcast};
 use tracing::info;
 use utoipa::OpenApi;
 
+use smc::{ElementType, MediaChanger};
+use ssc::TapeDrive;
+
 use crate::config::UserConfig;
 use crate::error::{AdminError, Error};
 use crate::store::Store;
@@ -27,6 +30,8 @@ pub struct AdminState {
     pub jwt_secret: String,
     pub ws_tx: broadcast::Sender<()>,
     pub version: &'static str,
+    pub changer: Arc<MediaChanger>,
+    pub drives: Vec<Arc<TapeDrive>>,
 }
 
 #[derive(Embed)]
@@ -61,18 +66,46 @@ struct LoginResponse {
 #[derive(Serialize, utoipa::ToSchema)]
 struct VtlStatusResponse {
     status: String,
+    vendor: String,
+    product: String,
+    serial: String,
+    total_slots: u16,
+    used_slots: u16,
+    total_drives: u16,
+    import_export_slots: u16,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct DriveResponse {
     id: usize,
     status: String,
+    serial: String,
+    barcode: Option<String>,
+    position: usize,
+    record_count: usize,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct SlotResponse {
+    address: u16,
+    full: bool,
+    barcode: Option<String>,
+    source_element: u16,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
 struct MediaResponse {
     barcode: String,
-    status: String,
+    location: String,
+    location_address: u16,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct LibrarySnapshot {
+    status: VtlStatusResponse,
+    drives: Vec<DriveResponse>,
+    slots: Vec<SlotResponse>,
+    media: Vec<MediaResponse>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -144,9 +177,22 @@ async fn login(
         (status = 200, description = "Library status summary", body = VtlStatusResponse)
     )
 )]
-async fn vtl_status() -> Json<VtlStatusResponse> {
+async fn vtl_status(State(state): State<AdminState>) -> Json<VtlStatusResponse> {
+    let snap = state.changer.snapshot();
+    let used_slots = snap
+        .elements
+        .iter()
+        .filter(|e| e.element_type == ElementType::Storage && e.full)
+        .count() as u16;
     Json(VtlStatusResponse {
-        status: "idle".into(),
+        status: "online".into(),
+        vendor: snap.vendor,
+        product: snap.product,
+        serial: snap.serial,
+        total_slots: snap.num_slots,
+        used_slots,
+        total_drives: snap.num_drives,
+        import_export_slots: snap.num_import_export,
     })
 }
 
@@ -158,8 +204,28 @@ async fn vtl_status() -> Json<VtlStatusResponse> {
         (status = 200, description = "List drives", body = Vec<DriveResponse>)
     )
 )]
-async fn vtl_drives() -> Json<Vec<DriveResponse>> {
-    Json(vec![])
+async fn vtl_drives(State(state): State<AdminState>) -> Json<Vec<DriveResponse>> {
+    let drives: Vec<DriveResponse> = state
+        .drives
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let snap = d.snapshot();
+            DriveResponse {
+                id: i,
+                status: if snap.loaded {
+                    "loaded".into()
+                } else {
+                    "empty".into()
+                },
+                serial: snap.serial,
+                barcode: snap.barcode,
+                position: snap.position,
+                record_count: snap.record_count,
+            }
+        })
+        .collect();
+    Json(drives)
 }
 
 #[utoipa::path(
@@ -170,8 +236,115 @@ async fn vtl_drives() -> Json<Vec<DriveResponse>> {
         (status = 200, description = "Media inventory", body = Vec<MediaResponse>)
     )
 )]
-async fn vtl_media() -> Json<Vec<MediaResponse>> {
-    Json(vec![])
+async fn vtl_media(State(state): State<AdminState>) -> Json<Vec<MediaResponse>> {
+    let snap = state.changer.snapshot();
+    let media: Vec<MediaResponse> = snap
+        .elements
+        .iter()
+        .filter(|e| e.full && e.barcode.is_some())
+        .map(|e| {
+            let location = match e.element_type {
+                ElementType::DataTransfer => format!("drive:{}", e.address),
+                ElementType::Storage => format!("slot:{}", e.address),
+                ElementType::ImportExport => format!("import_export:{}", e.address),
+                ElementType::Transport => format!("transport:{}", e.address),
+            };
+            MediaResponse {
+                barcode: e.barcode.clone().unwrap(),
+                location,
+                location_address: e.address,
+            }
+        })
+        .collect();
+    Json(media)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/snapshot",
+    tag = "VTL",
+    responses(
+        (status = 200, description = "Complete library snapshot", body = LibrarySnapshot)
+    )
+)]
+async fn vtl_snapshot(State(state): State<AdminState>) -> Json<LibrarySnapshot> {
+    let changer_snap = state.changer.snapshot();
+
+    let used_slots = changer_snap
+        .elements
+        .iter()
+        .filter(|e| e.element_type == ElementType::Storage && e.full)
+        .count() as u16;
+
+    let status = VtlStatusResponse {
+        status: "online".into(),
+        vendor: changer_snap.vendor.clone(),
+        product: changer_snap.product.clone(),
+        serial: changer_snap.serial.clone(),
+        total_slots: changer_snap.num_slots,
+        used_slots,
+        total_drives: changer_snap.num_drives,
+        import_export_slots: changer_snap.num_import_export,
+    };
+
+    let drives: Vec<DriveResponse> = state
+        .drives
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let ds = d.snapshot();
+            DriveResponse {
+                id: i,
+                status: if ds.loaded {
+                    "loaded".into()
+                } else {
+                    "empty".into()
+                },
+                serial: ds.serial,
+                barcode: ds.barcode,
+                position: ds.position,
+                record_count: ds.record_count,
+            }
+        })
+        .collect();
+
+    let slots: Vec<SlotResponse> = changer_snap
+        .elements
+        .iter()
+        .filter(|e| e.element_type == ElementType::Storage)
+        .map(|e| SlotResponse {
+            address: e.address,
+            full: e.full,
+            barcode: e.barcode.clone(),
+            source_element: e.source_element,
+        })
+        .collect();
+
+    let media: Vec<MediaResponse> = changer_snap
+        .elements
+        .iter()
+        .filter(|e| e.full && e.barcode.is_some())
+        .map(|e| {
+            let location = match e.element_type {
+                ElementType::DataTransfer => format!("drive:{}", e.address),
+                ElementType::Storage => format!("slot:{}", e.address),
+                ElementType::ImportExport => format!("import_export:{}", e.address),
+                ElementType::Transport => format!("transport:{}", e.address),
+            };
+            MediaResponse {
+                barcode: e.barcode.clone().unwrap(),
+                location,
+                location_address: e.address,
+            }
+        })
+        .collect();
+
+    Json(LibrarySnapshot {
+        status,
+        drives,
+        slots,
+        media,
+    })
 }
 
 #[utoipa::path(
@@ -211,6 +384,7 @@ async fn config_show(
         vtl_status,
         vtl_drives,
         vtl_media,
+        vtl_snapshot,
         config_show,
     ),
     components(schemas(
@@ -219,7 +393,9 @@ async fn config_show(
         LoginResponse,
         VtlStatusResponse,
         DriveResponse,
+        SlotResponse,
         MediaResponse,
+        LibrarySnapshot,
         ConfigEntry,
     )),
     tags(
@@ -341,6 +517,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/vtl/status", get(vtl_status))
         .route("/api/vtl/drives", get(vtl_drives))
         .route("/api/vtl/media", get(vtl_media))
+        .route("/api/vtl/snapshot", get(vtl_snapshot))
         .route("/api/config", get(config_show))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

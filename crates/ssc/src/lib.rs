@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
+use serde::Serialize;
 use tracing::trace;
 
 // SCSI command opcodes
@@ -25,13 +26,22 @@ enum TapeRecord {
 }
 
 struct TapeMedia {
-    _barcode: String,
+    barcode: String,
     records: Vec<TapeRecord>,
     position: usize, // 0 = BOT, len = EOD
 }
 
 struct DriveState {
     media: Option<TapeMedia>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DriveSnapshot {
+    pub serial: String,
+    pub loaded: bool,
+    pub barcode: Option<String>,
+    pub position: usize,
+    pub record_count: usize,
 }
 
 /// A SCSI Tape Drive device emulating an IBM Ultrium LTO drive.
@@ -80,6 +90,26 @@ impl TapeDrive {
             state: Mutex::new(DriveState { media: None }),
         }
     }
+
+    pub fn snapshot(&self) -> DriveSnapshot {
+        let st = self.state.lock().unwrap();
+        match &st.media {
+            Some(media) => DriveSnapshot {
+                serial: self.serial.clone(),
+                loaded: true,
+                barcode: Some(media.barcode.clone()),
+                position: media.position,
+                record_count: media.records.len(),
+            },
+            None => DriveSnapshot {
+                serial: self.serial.clone(),
+                loaded: false,
+                barcode: None,
+                position: 0,
+                record_count: 0,
+            },
+        }
+    }
 }
 
 impl MediaLoadNotify for TapeDrive {
@@ -87,7 +117,7 @@ impl MediaLoadNotify for TapeDrive {
         let mut st = self.state.lock().unwrap();
         trace!(barcode, "tape media loaded into drive");
         st.media = Some(TapeMedia {
-            _barcode: barcode.to_string(),
+            barcode: barcode.to_string(),
             records: Vec::new(),
             position: 0,
         });

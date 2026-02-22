@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
+use serde::Serialize;
 use tracing::trace;
 
 // SCSI command opcodes
@@ -39,6 +40,34 @@ struct ChangerState {
     start_iee: u16,
     num_iee: u16,
     elements: Vec<Element>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ElementType {
+    Transport,
+    Storage,
+    ImportExport,
+    DataTransfer,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ElementSnapshot {
+    pub address: u16,
+    pub element_type: ElementType,
+    pub full: bool,
+    pub barcode: Option<String>,
+    pub source_element: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangerSnapshot {
+    pub vendor: String,
+    pub product: String,
+    pub serial: String,
+    pub num_drives: u16,
+    pub num_slots: u16,
+    pub num_import_export: u16,
+    pub elements: Vec<ElementSnapshot>,
 }
 
 /// A SCSI Media Changer device emulating a Quantum Scalar library.
@@ -159,6 +188,40 @@ impl MediaChanger {
             product: product.to_string(),
             state: Mutex::new(state),
             drives,
+        }
+    }
+
+    pub fn snapshot(&self) -> ChangerSnapshot {
+        let st = self.state.lock().unwrap();
+        let elements = st
+            .elements
+            .iter()
+            .enumerate()
+            .map(|(addr, elem)| {
+                let element_type = match elem.element_type {
+                    ELEM_MTE => ElementType::Transport,
+                    ELEM_STE => ElementType::Storage,
+                    ELEM_IEE => ElementType::ImportExport,
+                    ELEM_DTE => ElementType::DataTransfer,
+                    _ => ElementType::Storage,
+                };
+                ElementSnapshot {
+                    address: addr as u16,
+                    element_type,
+                    full: elem.full,
+                    barcode: elem.barcode.clone(),
+                    source_element: elem.source_element,
+                }
+            })
+            .collect();
+        ChangerSnapshot {
+            vendor: self.vendor.trim().to_string(),
+            product: self.product.trim().to_string(),
+            serial: self.serial.clone(),
+            num_drives: st.num_drives,
+            num_slots: st.num_slots,
+            num_import_export: st.num_iee,
+            elements,
         }
     }
 }

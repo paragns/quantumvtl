@@ -72,14 +72,6 @@ async fn main() -> anyhow::Result<()> {
             .collect()
     };
 
-    let admin_state = AdminState {
-        store,
-        users: config.users,
-        jwt_secret,
-        ws_tx,
-        version: VERSION,
-    };
-
     // Start iSCSI target
     let media_barcodes: Vec<String> = config.library.media.iter().map(|m| m.barcode.clone()).collect();
 
@@ -93,16 +85,27 @@ async fn main() -> anyhow::Result<()> {
         drive_arcs.push(drive);
     }
 
-    let changer = MediaChanger::new(
+    let changer = Arc::new(MediaChanger::new(
         &config.library.model,
         &config.library.serial,
         config.library.drives as u16,
         config.library.slots as u16,
         &media_barcodes,
         drive_notifiers,
-    );
+    ));
+
+    let admin_state = AdminState {
+        store,
+        users: config.users,
+        jwt_secret,
+        ws_tx,
+        version: VERSION,
+        changer: changer.clone(),
+        drives: drive_arcs.clone(),
+    };
+
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
-    iscsi_target.add_lun(0, Arc::new(changer));
+    iscsi_target.add_lun(0, changer);
 
     for (i, drive) in drive_arcs.into_iter().enumerate() {
         iscsi_target.add_lun((i + 1) as u64, drive);
