@@ -4,4 +4,7 @@ members = [
     "crates/vtld",
     "crates/vtlctl",
     "crates/xtask",
+    "crates/iscsi-target",
+    "crates/smc",
+    "crates/ssc",
 ]

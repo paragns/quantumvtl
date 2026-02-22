@@ -1,0 +1,8 @@
+[package]
+name = "ssc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+iscsi-target = { path = "../iscsi-target" }
+tracing = "0.1"

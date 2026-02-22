@@ -1,0 +1,33 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    linux-image-generic \
+    open-iscsi \
+    sg3-utils \
+    lsscsi \
+    iproute2 \
+    kmod \
+    initramfs-tools \
+    systemd \
+    udev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ensure required kernel modules are in initramfs
+RUN echo "virtio_blk" >> /etc/initramfs-tools/modules && \
+    echo "virtio_pci" >> /etc/initramfs-tools/modules && \
+    echo "virtio_net" >> /etc/initramfs-tools/modules && \
+    echo "iscsi_tcp" >> /etc/initramfs-tools/modules && \
+    echo "libiscsi" >> /etc/initramfs-tools/modules && \
+    echo "scsi_transport_iscsi" >> /etc/initramfs-tools/modules && \
+    echo "sg" >> /etc/initramfs-tools/modules && \
+    echo "ch" >> /etc/initramfs-tools/modules && \
+    echo "9pnet" >> /etc/initramfs-tools/modules && \
+    echo "9pnet_virtio" >> /etc/initramfs-tools/modules && \
+    echo "9p" >> /etc/initramfs-tools/modules && \
+    update-initramfs -u
+
+# Copy test init script
+COPY init.sh /init.sh
+RUN chmod +x /init.sh

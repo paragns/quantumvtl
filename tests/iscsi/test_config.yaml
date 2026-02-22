@@ -1,0 +1,22 @@
+listen:
+  host: "10.0.0.1"
+  admin_port: 8081
+
+store:
+  path: "vtld.redb"
+
+iscsi:
+  port: 3260
+  iqn: "iqn.2024-01.com.quantumvtl:vtl"
+
+library:
+  model: "Scalar i6"
+  serial: "AAAABBBB0001"
+  data_dir: "./data"
+  drives: 1
+  slots: 4
+  media: []
+
+users:
+  - username: admin
+    password: admin

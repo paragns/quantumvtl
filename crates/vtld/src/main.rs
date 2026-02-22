@@ -4,6 +4,8 @@ use rand::Rng;
 use tokio::sync::{Notify, broadcast};
 use tracing::{error, info};
 
+use iscsi_target::target::{Target, TargetServer};
+use smc::MediaChanger;
 use vtld::admin::{AdminState, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
@@ -76,6 +78,20 @@ async fn main() -> anyhow::Result<()> {
         ws_tx,
         version: VERSION,
     };
+
+    // Start iSCSI target
+    let changer = MediaChanger::new(&config.library.model, &config.library.serial);
+    let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
+    iscsi_target.add_lun(0, Arc::new(changer));
+
+    let iscsi_addr = format!("{}:{}", config.listen.host, config.iscsi.port);
+    let iscsi_server = TargetServer::new(iscsi_target);
+    let iscsi_shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        if let Err(e) = iscsi_server.run(&iscsi_addr, iscsi_shutdown).await {
+            error!("iSCSI target error: {e}");
+        }
+    });
 
     let admin_addr = format!("{}:{}", config.listen.host, config.listen.admin_port);
     if let Err(e) = run_admin_server(&admin_addr, admin_state, shutdown).await {

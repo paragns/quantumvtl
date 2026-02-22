@@ -5,6 +5,10 @@ listen:
 store:
   path: "vtld.redb"
 
+iscsi:
+  port: 3260
+  iqn: "iqn.2024-01.com.quantumvtl:vtl"
+
 library:
   model: "Quantum Scalar i6"
   serial: "AAAABBBB0001"

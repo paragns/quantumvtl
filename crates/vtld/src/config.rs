@@ -16,7 +16,34 @@ pub struct Config {
     pub store: StoreConfig,
     pub library: LibraryConfig,
     #[serde(default)]
+    pub iscsi: IscsiConfig,
+    #[serde(default)]
     pub users: Vec<UserConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IscsiConfig {
+    #[serde(default = "default_iscsi_port")]
+    pub port: u16,
+    #[serde(default = "default_iscsi_iqn")]
+    pub iqn: String,
+}
+
+impl Default for IscsiConfig {
+    fn default() -> Self {
+        Self {
+            port: default_iscsi_port(),
+            iqn: default_iscsi_iqn(),
+        }
+    }
+}
+
+fn default_iscsi_port() -> u16 {
+    3260
+}
+
+fn default_iscsi_iqn() -> String {
+    "iqn.2024-01.com.quantumvtl:vtl".to_owned()
 }
 
 #[derive(Debug, Deserialize)]
