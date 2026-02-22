@@ -1,1 +1,5 @@
 /ref
+/target
+crates/vtld/frontend/node_modules
+crates/vtld/frontend/dist
+*.redb
