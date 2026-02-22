@@ -1,6 +1,6 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use iscsi_target::{ScsiDevice, ScsiResult};
+use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
 use tracing::trace;
 
 // SCSI command opcodes
@@ -48,6 +48,7 @@ pub struct MediaChanger {
     vendor: String,
     product: String,
     state: Mutex<ChangerState>,
+    drives: Vec<Arc<dyn MediaLoadNotify>>,
 }
 
 impl MediaChanger {
@@ -57,6 +58,7 @@ impl MediaChanger {
         num_drives: u16,
         num_slots: u16,
         media_barcodes: &[String],
+        drives: Vec<Arc<dyn MediaLoadNotify>>,
     ) -> Self {
         let vendor = "QUANTUM ";
         let product = format!("{:<16}", model);
@@ -156,6 +158,7 @@ impl MediaChanger {
             vendor: vendor.to_string(),
             product: product.to_string(),
             state: Mutex::new(state),
+            drives,
         }
     }
 }
@@ -186,7 +189,7 @@ impl ScsiDevice for MediaChanger {
             },
             MODE_SENSE_6 => handle_mode_sense_6(cdb, &self.state),
             MODE_SENSE_10 => handle_mode_sense_10(cdb, &self.state),
-            MOVE_MEDIUM => handle_move_medium(cdb, &self.state),
+            MOVE_MEDIUM => handle_move_medium(cdb, &self.state, &self.drives),
             READ_ELEMENT_STATUS => handle_read_element_status(cdb, &self.state),
             _ => {
                 trace!(opcode, "unsupported SMC command");
@@ -398,7 +401,11 @@ fn build_element_address_page(st: &ChangerState) -> Vec<u8> {
 }
 
 /// MOVE MEDIUM — CDB[2-3]=transport, [4-5]=source, [6-7]=dest
-fn handle_move_medium(cdb: &[u8], state: &Mutex<ChangerState>) -> ScsiResult {
+fn handle_move_medium(
+    cdb: &[u8],
+    state: &Mutex<ChangerState>,
+    drives: &[Arc<dyn MediaLoadNotify>],
+) -> ScsiResult {
     let _transport = ((cdb[2] as u16) << 8) | cdb[3] as u16;
     let source = ((cdb[4] as u16) << 8) | cdb[5] as u16;
     let dest = ((cdb[6] as u16) << 8) | cdb[7] as u16;
@@ -443,16 +450,34 @@ fn handle_move_medium(cdb: &[u8], state: &Mutex<ChangerState>) -> ScsiResult {
         };
     }
 
+    // Notify source drive (if DTE) that media is being unloaded
+    if st.elements[src_idx].element_type == ELEM_DTE {
+        let drive_idx = src_idx - st.start_drive as usize;
+        if let Some(drive) = drives.get(drive_idx) {
+            drive.media_unloaded();
+        }
+    }
+
     // Transfer the media
     let barcode = st.elements[src_idx].barcode.take();
     st.elements[src_idx].full = false;
 
     st.elements[dst_idx].full = true;
-    st.elements[dst_idx].barcode = barcode;
+    st.elements[dst_idx].barcode.clone_from(&barcode);
     st.elements[dst_idx].source_element = source;
 
     // Clear source's source_element
     st.elements[src_idx].source_element = 0;
+
+    // Notify destination drive (if DTE) that media is loaded
+    if st.elements[dst_idx].element_type == ELEM_DTE {
+        let drive_idx = dst_idx - st.start_drive as usize;
+        if let Some(drive) = drives.get(drive_idx) {
+            if let Some(ref bc) = barcode {
+                drive.media_loaded(bc);
+            }
+        }
+    }
 
     trace!(source, dest, "MOVE MEDIUM complete");
 

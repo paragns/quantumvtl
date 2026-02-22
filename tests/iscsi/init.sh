@@ -285,6 +285,108 @@ fi
 
 log "=== All MTX tests passed ==="
 
+# ──────────────────────────────────────────────
+# Tape I/O tests
+# ──────────────────────────────────────────────
+
+log "=== Tape I/O tests ==="
+
+# Slot 2 still has TEST02L9 — load it into drive 0
+log "loading slot 2 into drive 0..."
+MTX_LOAD=$(mtx -f "$CHANGER_DEV" load 2 0 2>&1)
+MTX_RC=$?
+log "mtx load output: $MTX_LOAD (rc=$MTX_RC)"
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx load slot 2 -> drive 0 failed with rc=$MTX_RC"
+fi
+log "SUCCESS: loaded slot 2 -> drive 0"
+
+# Load st (SCSI tape) kernel module
+log "loading st kernel module..."
+modprobe st 2>/dev/null || true
+
+# Wait for /dev/nst0 to appear
+log "waiting for /dev/nst0..."
+TAPE_DEV=""
+ATTEMPTS=0
+MAX_ATTEMPTS=30
+while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
+    if [ -c /dev/nst0 ]; then
+        TAPE_DEV="/dev/nst0"
+        break
+    fi
+    sleep 1
+    ATTEMPTS=$((ATTEMPTS + 1))
+done
+
+if [ -z "$TAPE_DEV" ]; then
+    log "ls /dev/st* /dev/nst*:"
+    ls -la /dev/st* /dev/nst* 2>&1 || true
+    log "lsscsi output:"
+    lsscsi -g 2>/dev/null || true
+    die "no tape device /dev/nst0 found after ${MAX_ATTEMPTS}s"
+fi
+log "found tape device: $TAPE_DEV"
+
+# Write data to tape
+TEST_STRING="HELLO_TAPE_TEST_12345"
+log "writing test data to tape..."
+WRITE_OUTPUT=$(echo "$TEST_STRING" | dd of="$TAPE_DEV" bs=512 2>&1)
+WRITE_RC=$?
+log "dd write output: $WRITE_OUTPUT (rc=$WRITE_RC)"
+if [ "$WRITE_RC" -ne 0 ]; then
+    die "dd write to tape failed with rc=$WRITE_RC"
+fi
+log "SUCCESS: wrote test data to tape"
+
+# Write a filemark
+log "writing filemark..."
+WEOF_OUTPUT=$(mt -f "$TAPE_DEV" weof 2>&1)
+WEOF_RC=$?
+log "mt weof output: $WEOF_OUTPUT (rc=$WEOF_RC)"
+if [ "$WEOF_RC" -ne 0 ]; then
+    die "mt weof failed with rc=$WEOF_RC"
+fi
+log "SUCCESS: wrote filemark"
+
+# Rewind tape
+log "rewinding tape..."
+REW_OUTPUT=$(mt -f "$TAPE_DEV" rewind 2>&1)
+REW_RC=$?
+log "mt rewind output: $REW_OUTPUT (rc=$REW_RC)"
+if [ "$REW_RC" -ne 0 ]; then
+    die "mt rewind failed with rc=$REW_RC"
+fi
+log "SUCCESS: tape rewound"
+
+# Read data back
+log "reading data back from tape..."
+READ_OUTPUT=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+READ_RC=$?
+log "read data: '$READ_OUTPUT' (rc=$READ_RC)"
+if [ "$READ_RC" -ne 0 ]; then
+    die "dd read from tape failed with rc=$READ_RC"
+fi
+
+# Verify the data
+if echo "$READ_OUTPUT" | grep -q "$TEST_STRING"; then
+    log "SUCCESS: read back correct data"
+else
+    die "data mismatch: expected '$TEST_STRING', got '$READ_OUTPUT'"
+fi
+
+# Unload tape back to slot 2
+log "unloading drive 0 to slot 2..."
+MTX_UNLOAD=$(mtx -f "$CHANGER_DEV" unload 2 0 2>&1)
+MTX_RC=$?
+log "mtx unload output: $MTX_UNLOAD (rc=$MTX_RC)"
+if [ "$MTX_RC" -ne 0 ]; then
+    die "mtx unload failed with rc=$MTX_RC"
+fi
+log "SUCCESS: unloaded drive 0 -> slot 2"
+
+log "=== All tape I/O tests passed ==="
+
 # Logout
 log "logging out..."
 iscsiadm -m node --logout 2>/dev/null || true

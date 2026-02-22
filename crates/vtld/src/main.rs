@@ -82,18 +82,31 @@ async fn main() -> anyhow::Result<()> {
 
     // Start iSCSI target
     let media_barcodes: Vec<String> = config.library.media.iter().map(|m| m.barcode.clone()).collect();
+
+    // Create tape drives and collect notification handles for the changer
+    let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
+    let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
+    for i in 0..config.library.drives {
+        let serial = format!("DRIVE{:03}", i);
+        let drive = Arc::new(TapeDrive::new(&serial));
+        drive_notifiers.push(drive.clone());
+        drive_arcs.push(drive);
+    }
+
     let changer = MediaChanger::new(
         &config.library.model,
         &config.library.serial,
         config.library.drives as u16,
         config.library.slots as u16,
         &media_barcodes,
+        drive_notifiers,
     );
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
     iscsi_target.add_lun(0, Arc::new(changer));
 
-    let drive = TapeDrive::new("DRIVE001");
-    iscsi_target.add_lun(1, Arc::new(drive));
+    for (i, drive) in drive_arcs.into_iter().enumerate() {
+        iscsi_target.add_lun((i + 1) as u64, drive);
+    }
 
     let iscsi_addr = format!("{}:{}", config.listen.host, config.iscsi.port);
     let iscsi_server = TargetServer::new(iscsi_target);

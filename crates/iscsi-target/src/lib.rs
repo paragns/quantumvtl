@@ -16,3 +16,12 @@ pub struct ScsiResult {
 pub trait ScsiDevice: Send + Sync {
     fn execute_command(&self, cdb: &[u8], data_out: &[u8]) -> ScsiResult;
 }
+
+/// Notification interface for changer-drive coordination.
+///
+/// When the media changer moves a tape into or out of a drive element,
+/// it calls these methods so the drive can update its internal state.
+pub trait MediaLoadNotify: Send + Sync {
+    fn media_loaded(&self, barcode: &str);
+    fn media_unloaded(&self);
+}

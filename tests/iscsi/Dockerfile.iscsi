@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sg3-utils \
     lsscsi \
     mtx \
+    mt-st \
     iproute2 \
     kmod \
     initramfs-tools \
@@ -27,6 +28,7 @@ RUN echo "virtio_blk" >> /etc/initramfs-tools/modules && \
     echo "9pnet" >> /etc/initramfs-tools/modules && \
     echo "9pnet_virtio" >> /etc/initramfs-tools/modules && \
     echo "9p" >> /etc/initramfs-tools/modules && \
+    echo "st" >> /etc/initramfs-tools/modules && \
     update-initramfs -u
 
 # Copy test init script
