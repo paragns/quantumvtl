@@ -13,10 +13,11 @@ pub mod snapshot;
 pub mod timing;
 pub mod vpd;
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
-use tracing::trace;
+use tracing::{trace, warn};
 
 use commands::opcodes::*;
 use media::geometry::LtoGeneration;
@@ -44,6 +45,8 @@ pub struct TapeDrive {
     serial: String,
     /// LTO generation this drive emulates.
     generation: LtoGeneration,
+    /// Directory for persisting tape data files.
+    data_dir: PathBuf,
     /// Protected internal state.
     state: Mutex<DriveState>,
     /// Mode page registry.
@@ -53,7 +56,7 @@ pub struct TapeDrive {
 }
 
 impl TapeDrive {
-    pub fn new(serial: &str, generation: LtoGeneration) -> Self {
+    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
         let vendor = "IBM     ";
@@ -98,6 +101,7 @@ impl TapeDrive {
             inquiry_data: inq,
             serial: serial.to_string(),
             generation,
+            data_dir,
             state: Mutex::new(DriveState {
                 media_state: None,
                 activity: DriveActivity::Empty,
@@ -163,12 +167,40 @@ impl TapeDrive {
     }
 }
 
+impl TapeDrive {
+    /// Path to the persistence file for a given barcode.
+    fn tape_path(&self, barcode: &str) -> PathBuf {
+        self.data_dir.join(format!("{}.tape", barcode))
+    }
+}
+
 impl MediaLoadNotify for TapeDrive {
     fn media_loaded(&self, barcode: &str) {
         let mut st = self.state.lock().unwrap();
         trace!(barcode, "tape media loaded into drive");
 
-        let mut media = TapeMedia::new(barcode, self.generation);
+        let tape_path = self.tape_path(barcode);
+        let mut media = if tape_path.exists() {
+            match std::fs::read(&tape_path) {
+                Ok(data) => match bincode::deserialize::<TapeMedia>(&data) {
+                    Ok(mut m) => {
+                        m.fix_geometry();
+                        trace!(barcode, "restored tape media from disk");
+                        m
+                    }
+                    Err(e) => {
+                        warn!(barcode, error = %e, "failed to deserialize tape, creating blank");
+                        TapeMedia::new(barcode, self.generation)
+                    }
+                },
+                Err(e) => {
+                    warn!(barcode, error = %e, "failed to read tape file, creating blank");
+                    TapeMedia::new(barcode, self.generation)
+                }
+            }
+        } else {
+            TapeMedia::new(barcode, self.generation)
+        };
         media.record_load();
 
         st.media_state = Some(DriveMediaState::new(media));
@@ -179,6 +211,29 @@ impl MediaLoadNotify for TapeDrive {
     fn media_unloaded(&self) {
         let mut st = self.state.lock().unwrap();
         trace!("tape media unloaded from drive");
+
+        // Persist tape data before dropping
+        if let Some(ref ms) = st.media_state {
+            let tape_path = self.tape_path(&ms.media.barcode);
+            let tmp_path = tape_path.with_extension("tape.tmp");
+            match bincode::serialize(&ms.media) {
+                Ok(data) => {
+                    if let Err(e) = std::fs::create_dir_all(&self.data_dir) {
+                        warn!(error = %e, "failed to create data dir for tape persistence");
+                    } else if let Err(e) = std::fs::write(&tmp_path, &data) {
+                        warn!(barcode = %ms.media.barcode, error = %e, "failed to write tape file");
+                    } else if let Err(e) = std::fs::rename(&tmp_path, &tape_path) {
+                        warn!(barcode = %ms.media.barcode, error = %e, "failed to rename tape file");
+                    } else {
+                        trace!(barcode = %ms.media.barcode, bytes = data.len(), "persisted tape media to disk");
+                    }
+                }
+                Err(e) => {
+                    warn!(barcode = %ms.media.barcode, error = %e, "failed to serialize tape media");
+                }
+            }
+        }
+
         st.media_state = None;
         st.activity = DriveActivity::Empty;
     }

@@ -96,6 +96,7 @@ fn space_filemarks(count: i32, ms: &mut DriveMediaState) -> ScsiResult {
             ms.position.block_number -= 1;
             if ms.current_partition().records[ms.position.block_number as usize].is_filemark() {
                 fm_seen += 1;
+                ms.position.file_number = ms.position.file_number.saturating_sub(1);
             }
         }
     }

@@ -1,9 +1,9 @@
 //! LTO generation constants and tape geometry.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// LTO tape generation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LtoGeneration {
     Lto5,
     Lto6,

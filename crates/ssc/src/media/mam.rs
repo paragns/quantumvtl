@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Well-known MAM attribute identifiers (from spec section 6.5).
 pub mod attr {
@@ -58,7 +58,7 @@ pub mod attr {
 }
 
 /// A single MAM attribute value.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MamAttribute {
     /// Attribute identifier.
     pub id: u16,
@@ -69,7 +69,7 @@ pub struct MamAttribute {
 }
 
 /// Medium Auxiliary Memory — per-cartridge attribute store.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MamAttributes {
     attributes: BTreeMap<u16, MamAttribute>,
 }

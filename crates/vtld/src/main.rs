@@ -77,11 +77,12 @@ async fn main() -> anyhow::Result<()> {
     let media_barcodes: Vec<String> = config.library.media.iter().map(|m| m.barcode.clone()).collect();
 
     // Create tape drives and collect notification handles for the changer
+    let data_dir = std::path::PathBuf::from(&config.library.data_dir);
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9));
+        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone()));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
     }

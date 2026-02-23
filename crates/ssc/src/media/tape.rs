@@ -3,10 +3,15 @@
 use super::geometry::{LtoGeneration, TapeGeometry};
 use super::mam::MamAttributes;
 use super::position::LogicalPosition;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Default geometry placeholder for serde deserialization (overwritten by `fix_geometry`).
+fn default_geometry() -> &'static TapeGeometry {
+    LtoGeneration::Lto9.geometry()
+}
 
 /// A single record on tape — either a data block or a filemark.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TapeRecord {
     /// A data block with its raw content.
     Data(Vec<u8>),
@@ -29,7 +34,7 @@ impl TapeRecord {
 }
 
 /// A single partition on tape.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TapePartition {
     /// Sequential records in this partition.
     pub records: Vec<TapeRecord>,
@@ -83,13 +88,14 @@ impl Default for TapePartition {
 }
 
 /// A virtual tape cartridge with its content and metadata.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TapeMedia {
     /// Barcode label (e.g., "ABC001L9").
     pub barcode: String,
     /// LTO generation of this cartridge.
     pub generation: LtoGeneration,
-    /// Reference to geometry constants.
+    /// Reference to geometry constants (reconstructed from `generation` on deserialize).
+    #[serde(skip, default = "default_geometry")]
     pub geometry: &'static TapeGeometry,
     /// Partitions (at least one; up to max_partitions).
     pub partitions: Vec<TapePartition>,
@@ -149,6 +155,11 @@ impl TapeMedia {
             total_loads: 0,
             meters_processed: 0.0,
         }
+    }
+
+    /// Reconstruct the geometry reference from the generation field after deserialization.
+    pub fn fix_geometry(&mut self) {
+        self.geometry = self.generation.geometry();
     }
 
     /// The currently active partition.
