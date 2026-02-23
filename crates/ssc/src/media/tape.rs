@@ -225,6 +225,9 @@ pub fn read_media_detail(data_dir: &std::path::Path, barcode: &str) -> Option<Me
                 RecordDescriptor::Data { length, .. } => {
                     data_record_sizes.push(*length);
                 }
+                RecordDescriptor::CompressedData { native_length, .. } => {
+                    data_record_sizes.push(*native_length);
+                }
             }
         }
 
@@ -283,7 +286,11 @@ pub fn read_media_detail(data_dir: &std::path::Path, barcode: &str) -> Option<Me
         capacity_used_pct: used_pct,
         approximate_remaining_mb: remaining_mb,
         compression_enabled: meta.compression_enabled,
-        compression_ratio: meta.compression_ratio,
+        compression_ratio: if compressed_bytes_written > 0 {
+            native_bytes_written as f64 / compressed_bytes_written as f64
+        } else {
+            1.0
+        },
         total_loads: meta.total_loads,
         optimization_done: meta.optimization_done,
         partitions,
