@@ -88,12 +88,16 @@ library:
   model: "Scalar i6"
   serial: "AAAABBBB0001"
   data_dir: "$VTLD_DATA_DIR/data"
-  drives: 1
-  slots: 4
+  drives: 2
+  slots: 8
   media:
     - barcode: "TEST01L9"
       capacity_bytes: 18000000000000
     - barcode: "TEST02L9"
+      capacity_bytes: 18000000000000
+    - barcode: "TEST03L9"
+      capacity_bytes: 18000000000000
+    - barcode: "TEST04L9"
       capacity_bytes: 18000000000000
 
 users:
@@ -120,7 +124,7 @@ qemu-img create -f qcow2 -b "$VM_DIR/rootfs.qcow2" -F qcow2 "$OVERLAY" 2>/dev/nu
 rm -f "$SERIAL_LOG"
 
 # Use SLIRP user-mode networking. VM reaches host at 10.0.2.2.
-timeout 90 ip netns exec "$NS_NAME" qemu-system-x86_64 \
+timeout 180 ip netns exec "$NS_NAME" qemu-system-x86_64 \
     -enable-kvm \
     -m 512 \
     -nographic \
