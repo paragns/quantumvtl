@@ -40,7 +40,6 @@ pub struct MediaMeta {
     pub worm: bool,
     pub optimization_done: bool,
     pub compression_enabled: bool,
-    pub compression_ratio: f64,
     pub total_loads: u32,
     pub meters_processed: f64,
     pub partition_count: u32,
@@ -52,6 +51,8 @@ pub struct PartitionStats {
     pub bytes_written_native: u64,
     pub bytes_written_compressed: u64,
     pub bytes_read_native: u64,
+    #[serde(default)]
+    pub bytes_read_compressed: u64,
 }
 
 // ── TapeStore ───────────────────────────────────────────────────────────────
@@ -216,7 +217,6 @@ impl TapeStore {
             worm: media.worm,
             optimization_done: media.optimization_done,
             compression_enabled: media.compression_enabled,
-            compression_ratio: media.compression_ratio,
             total_loads: media.total_loads,
             meters_processed: media.meters_processed,
             partition_count: media.partitions.len() as u32,
@@ -270,6 +270,7 @@ impl TapeStore {
             bytes_written_native: partition.bytes_written_native,
             bytes_written_compressed: partition.bytes_written_compressed,
             bytes_read_native: partition.bytes_read_native,
+            bytes_read_compressed: partition.bytes_read_compressed,
         };
         let encoded =
             bincode::serialize(&stats).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;

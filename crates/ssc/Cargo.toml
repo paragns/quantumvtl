@@ -10,3 +10,4 @@ redb = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
+zstd = "0.13"

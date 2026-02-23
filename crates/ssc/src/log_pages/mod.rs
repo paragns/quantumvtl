@@ -4,6 +4,52 @@
 //! LogPage trait. The framework handles header construction, page code
 //! dispatch, and parameter formatting.
 
+use std::sync::{Arc, Mutex};
+
+// ── Shared drive stats ──────────────────────────────────────────────────────
+
+/// Snapshot of drive statistics shared with live log pages.
+#[derive(Debug, Clone)]
+pub struct DriveStats {
+    pub media_loaded: bool,
+    pub native_capacity_bytes: u64,
+    pub buffer_size_bytes: usize,
+    pub total_bytes_written_native: u64,
+    pub total_bytes_written_compressed: u64,
+    pub total_bytes_read_native: u64,
+    pub total_bytes_read_compressed: u64,
+    pub partition_count: u8,
+    pub partition_native_written: Vec<u64>,
+    pub partition_compressed_written: Vec<u64>,
+    pub partition_remaining_bytes: Vec<u64>,
+    pub total_loads: u32,
+    pub compression_enabled: bool,
+}
+
+impl Default for DriveStats {
+    fn default() -> Self {
+        Self {
+            media_loaded: false,
+            native_capacity_bytes: 0,
+            buffer_size_bytes: 0,
+            total_bytes_written_native: 0,
+            total_bytes_written_compressed: 0,
+            total_bytes_read_native: 0,
+            total_bytes_read_compressed: 0,
+            partition_count: 0,
+            partition_native_written: Vec::new(),
+            partition_compressed_written: Vec::new(),
+            partition_remaining_bytes: Vec::new(),
+            total_loads: 0,
+            compression_enabled: true,
+        }
+    }
+}
+
+pub type SharedDriveStats = Arc<Mutex<DriveStats>>;
+
+// ── Log parameter wire format ───────────────────────────────────────────────
+
 /// A single log parameter within a log page.
 #[derive(Debug, Clone)]
 pub struct LogParameter {
@@ -187,22 +233,191 @@ impl LogPage for StubLogPage {
     }
 }
 
-/// Create the default log page registry with stub implementations for all
-/// mandatory log pages. These will be replaced with real implementations
-/// in Track C.
-pub fn default_registry() -> LogPageRegistry {
+// ── LP 0Ch: Sequential Access Device Log Page ───────────────────────────────
+
+struct SequentialAccessLogPage {
+    stats: SharedDriveStats,
+}
+
+impl LogPage for SequentialAccessLogPage {
+    fn page_code(&self) -> u8 {
+        0x0C
+    }
+
+    fn parameters(&self) -> Vec<LogParameter> {
+        let s = self.stats.lock().unwrap();
+        let written_mb = s.total_bytes_written_native / 1_000_000;
+        let ew_mb = s.native_capacity_bytes * 98 / 100 / 1_000_000;
+        let ew_leop_mb = s.native_capacity_bytes * 2 / 100 / 1_000_000;
+        let buf_mb = s.buffer_size_bytes as u32 / 1_000_000;
+
+        vec![
+            // 0000h: Total channel write bytes (host→drive = native)
+            LogParameter::counter64(0x0000, s.total_bytes_written_native),
+            // 0001h: Total device write bytes (drive→media = compressed)
+            LogParameter::counter64(0x0001, s.total_bytes_written_compressed),
+            // 0002h: Total device read bytes (media→drive = compressed)
+            LogParameter::counter64(0x0002, s.total_bytes_read_compressed),
+            // 0003h: Total channel read bytes (drive→host = native)
+            LogParameter::counter64(0x0003, s.total_bytes_read_native),
+            // 0004h: Native capacity BOP→EOD (MB)
+            LogParameter::counter32(0x0004, written_mb as u32),
+            // 0005h: Native capacity BOP→EW (MB)
+            LogParameter::counter32(0x0005, ew_mb as u32),
+            // 0006h: Min native capacity EW→LEOP (MB)
+            LogParameter::counter32(0x0006, ew_leop_mb as u32),
+            // 0007h: Native capacity BOP→current (MB) ≈ BOP→EOD
+            LogParameter::counter32(0x0007, written_mb as u32),
+            // 0008h: Max native capacity in buffer (MB)
+            LogParameter::counter32(0x0008, buf_mb),
+            // 0100h: Cleaning requested
+            LogParameter::counter64(0x0100, 0),
+            // 8000h: MB processed since cleaning
+            LogParameter::counter32(0x8000, 0),
+            // 8001h: Lifetime load cycles
+            LogParameter::counter32(0x8001, s.total_loads),
+            // 8002h: Lifetime cleaning cycles
+            LogParameter::counter32(0x8002, 0),
+            // 8003h: Lifetime power-on seconds
+            LogParameter::counter32(0x8003, 0),
+        ]
+    }
+}
+
+// ── LP 17h: Volume Statistics Log Page ──────────────────────────────────────
+
+struct VolumeStatisticsLogPage {
+    stats: SharedDriveStats,
+}
+
+impl LogPage for VolumeStatisticsLogPage {
+    fn page_code(&self) -> u8 {
+        0x17
+    }
+
+    fn parameters(&self) -> Vec<LogParameter> {
+        let s = self.stats.lock().unwrap();
+        let valid = if s.media_loaded { 0x01u64 } else { 0x00 };
+        let cap_mb = s.native_capacity_bytes / 1_000_000;
+        let used_mb = s.total_bytes_written_native / 1_000_000;
+
+        let mut params = vec![
+            // 0000h: Page valid
+            LogParameter::counter64(0x0000, valid),
+            // 0016h: Total native capacity MB
+            LogParameter::counter64(0x0016, cap_mb),
+            // 0017h: Used native capacity MB
+            LogParameter::counter64(0x0017, used_mb),
+            // 0018h: Application design capacity
+            LogParameter::counter64(0x0018, cap_mb),
+        ];
+
+        // Per-partition stats (simplified — partition 0 only for now)
+        for i in 0..s.partition_count as u16 {
+            let native_written = s.partition_native_written.get(i as usize).copied().unwrap_or(0);
+            let remaining = s.partition_remaining_bytes.get(i as usize).copied().unwrap_or(0);
+            // 0202h+i: Per-partition native capacity written
+            params.push(LogParameter::counter64(0x0202 + i, native_written / 1_000_000));
+            // 0204h+i: Per-partition remaining to EW
+            params.push(LogParameter::counter64(0x0204 + i * 2, remaining * 98 / 100 / 1_000_000));
+        }
+
+        params
+    }
+}
+
+// ── LP 1Bh: Data Compression Log Page ───────────────────────────────────────
+
+struct DataCompressionLogPage {
+    stats: SharedDriveStats,
+}
+
+impl LogPage for DataCompressionLogPage {
+    fn page_code(&self) -> u8 {
+        0x1B
+    }
+
+    fn parameters(&self) -> Vec<LogParameter> {
+        let s = self.stats.lock().unwrap();
+
+        // Read compression ratio × 100
+        let read_ratio_x100 = if s.total_bytes_read_compressed > 0 {
+            s.total_bytes_read_native * 100 / s.total_bytes_read_compressed
+        } else {
+            0
+        };
+
+        // Write compression ratio × 100
+        let write_ratio_x100 = if s.total_bytes_written_compressed > 0 {
+            s.total_bytes_written_native * 100 / s.total_bytes_written_compressed
+        } else {
+            0
+        };
+
+        vec![
+            LogParameter::counter64(0x0000, read_ratio_x100),
+            LogParameter::counter64(0x0001, write_ratio_x100),
+            LogParameter::counter64(0x0100, if s.compression_enabled { 1 } else { 0 }),
+        ]
+    }
+}
+
+// ── LP 31h: Tape Capacity Log Page (Legacy) ─────────────────────────────────
+
+struct TapeCapacityLogPage {
+    stats: SharedDriveStats,
+}
+
+impl LogPage for TapeCapacityLogPage {
+    fn page_code(&self) -> u8 {
+        0x31
+    }
+
+    fn parameters(&self) -> Vec<LogParameter> {
+        let s = self.stats.lock().unwrap();
+        let cap_mib = s.native_capacity_bytes / (1024 * 1024);
+
+        let mut params = Vec::new();
+        // For each partition: remaining capacity MiB, then max capacity MiB
+        for i in 0..std::cmp::max(s.partition_count, 1) as u16 {
+            let remaining = s.partition_remaining_bytes.get(i as usize).copied().unwrap_or(0);
+            let remaining_mib = remaining / (1024 * 1024);
+            // 0001h, 0002h: partition remaining capacity MiB
+            params.push(LogParameter::counter32(0x0001 + i, remaining_mib as u32));
+        }
+        // Pad to 2 partitions
+        if s.partition_count < 2 {
+            params.push(LogParameter::counter32(0x0002, 0));
+        }
+        for i in 0..std::cmp::max(s.partition_count, 1) as u16 {
+            // 0003h, 0004h: partition max capacity MiB
+            params.push(LogParameter::counter32(0x0003 + i, cap_mib as u32));
+        }
+        if s.partition_count < 2 {
+            params.push(LogParameter::counter32(0x0004, 0));
+        }
+
+        params
+    }
+}
+
+// ── Default registry ────────────────────────────────────────────────────────
+
+/// Create the default log page registry with live implementations for
+/// capacity/compression pages and stubs for error/alert pages.
+pub fn default_registry(stats: SharedDriveStats) -> LogPageRegistry {
     let mut reg = LogPageRegistry::new();
 
     // LP 02h: Write Error Counters
     reg.register(Box::new(StubLogPage::new(
         0x02,
         vec![
-            LogParameter::counter32(0x0000, 0), // Errors corrected without delay
-            LogParameter::counter32(0x0001, 0), // Errors corrected with delay
-            LogParameter::counter32(0x0002, 0), // Total rewrites/rereads
-            LogParameter::counter32(0x0003, 0), // Total errors corrected
-            LogParameter::counter32(0x0005, 0), // Total uncorrected errors
-            LogParameter::counter64(0x0006, 0), // Total bytes processed
+            LogParameter::counter32(0x0000, 0),
+            LogParameter::counter32(0x0001, 0),
+            LogParameter::counter32(0x0002, 0),
+            LogParameter::counter32(0x0003, 0),
+            LogParameter::counter32(0x0005, 0),
+            LogParameter::counter64(0x0006, 0),
         ],
     )));
 
@@ -225,26 +440,10 @@ pub fn default_registry() -> LogPageRegistry {
         vec![LogParameter::counter32(0x0000, 0)],
     )));
 
-    // LP 0Ch: Sequential Access Device (THE capacity page)
-    reg.register(Box::new(StubLogPage::new(
-        0x0C,
-        vec![
-            LogParameter::counter64(0x0000, 0), // Total channel write bytes
-            LogParameter::counter64(0x0001, 0), // Total device write bytes
-            LogParameter::counter64(0x0002, 0), // Total device read bytes
-            LogParameter::counter64(0x0003, 0), // Total channel read bytes
-            LogParameter::counter32(0x0004, 0), // Native capacity BOP→EOD (MB)
-            LogParameter::counter32(0x0005, 0), // Native capacity BOP→EW (MB)
-            LogParameter::counter32(0x0006, 0), // Min native capacity EW→LEOP (MB)
-            LogParameter::counter32(0x0007, 0), // Native capacity BOP→current (MB)
-            LogParameter::counter32(0x0008, 0), // Max native capacity in buffer (MB)
-            LogParameter::counter64(0x0100, 0), // Cleaning requested
-            LogParameter::counter32(0x8000, 0), // MB processed since cleaning
-            LogParameter::counter32(0x8001, 0), // Lifetime load cycles
-            LogParameter::counter32(0x8002, 0), // Lifetime cleaning cycles
-            LogParameter::counter32(0x8003, 0), // Lifetime power-on seconds
-        ],
-    )));
+    // LP 0Ch: Sequential Access Device — live
+    reg.register(Box::new(SequentialAccessLogPage {
+        stats: stats.clone(),
+    }));
 
     // LP 11h: DT Device Status
     reg.register(Box::new(StubLogPage::empty(0x11)));
@@ -253,24 +452,22 @@ pub fn default_registry() -> LogPageRegistry {
     reg.register(Box::new(StubLogPage::new(
         0x14,
         vec![
-            LogParameter::counter32(0x0000, 0), // Lifetime volume loads
-            LogParameter::counter32(0x0001, 0), // Lifetime cleaning operations
-            LogParameter::counter32(0x0002, 0), // Lifetime power-on hours
-            LogParameter::counter32(0x0003, 0), // Lifetime medium motion hours
+            LogParameter::counter32(0x0000, 0),
+            LogParameter::counter32(0x0001, 0),
+            LogParameter::counter32(0x0002, 0),
+            LogParameter::counter32(0x0003, 0),
         ],
     )));
 
-    // LP 17h: Volume Statistics
-    reg.register(Box::new(StubLogPage::empty(0x17)));
+    // LP 17h: Volume Statistics — live
+    reg.register(Box::new(VolumeStatisticsLogPage {
+        stats: stats.clone(),
+    }));
 
-    // LP 1Bh: Data Compression
-    reg.register(Box::new(StubLogPage::new(
-        0x1B,
-        vec![
-            LogParameter::counter64(0x0000, 0), // Read compression ratio x100
-            LogParameter::counter64(0x0001, 0), // Write compression ratio x100
-        ],
-    )));
+    // LP 1Bh: Data Compression — live
+    reg.register(Box::new(DataCompressionLogPage {
+        stats: stats.clone(),
+    }));
 
     // LP 2Eh: TapeAlerts
     reg.register(Box::new(StubLogPage::empty(0x2E)));
@@ -278,8 +475,8 @@ pub fn default_registry() -> LogPageRegistry {
     // LP 30h: Tape Usage (legacy)
     reg.register(Box::new(StubLogPage::empty(0x30)));
 
-    // LP 31h: Tape Capacity (legacy)
-    reg.register(Box::new(StubLogPage::empty(0x31)));
+    // LP 31h: Tape Capacity — live
+    reg.register(Box::new(TapeCapacityLogPage { stats }));
 
     reg
 }

@@ -18,15 +18,36 @@ pub enum RecordDescriptor {
     Data { offset: u64, length: u32 },
     /// Filemark (no data).
     Filemark,
+    /// Compressed data block: stores compressed bytes on disk, tracks original size.
+    CompressedData {
+        offset: u64,
+        compressed_length: u32,
+        native_length: u32,
+    },
 }
 
 impl RecordDescriptor {
-    /// Size of this record in bytes (0 for filemarks).
+    /// On-disk size of this record in bytes (0 for filemarks).
     pub fn byte_len(&self) -> u32 {
         match self {
             RecordDescriptor::Data { length, .. } => *length,
+            RecordDescriptor::CompressedData { compressed_length, .. } => *compressed_length,
             RecordDescriptor::Filemark => 0,
         }
+    }
+
+    /// Original uncompressed size (same as byte_len for Data, native_length for CompressedData).
+    pub fn native_byte_len(&self) -> u32 {
+        match self {
+            RecordDescriptor::Data { length, .. } => *length,
+            RecordDescriptor::CompressedData { native_length, .. } => *native_length,
+            RecordDescriptor::Filemark => 0,
+        }
+    }
+
+    /// True for Data and CompressedData variants.
+    pub fn is_data(&self) -> bool {
+        matches!(self, RecordDescriptor::Data { .. } | RecordDescriptor::CompressedData { .. })
     }
 
     pub fn is_filemark(&self) -> bool {
@@ -43,10 +64,13 @@ pub struct TapePartition {
     pub filemark_positions: Vec<u64>,
     /// Total uncompressed bytes written to this partition.
     pub bytes_written_native: u64,
-    /// Total "compressed" bytes (simulated) written to this partition.
+    /// Total on-disk compressed bytes written to this partition.
     pub bytes_written_compressed: u64,
     /// Total uncompressed bytes read from this partition.
     pub bytes_read_native: u64,
+    /// Total on-disk compressed bytes read from this partition.
+    #[serde(default)]
+    pub bytes_read_compressed: u64,
 }
 
 impl TapePartition {
@@ -57,6 +81,7 @@ impl TapePartition {
             bytes_written_native: 0,
             bytes_written_compressed: 0,
             bytes_read_native: 0,
+            bytes_read_compressed: 0,
         }
     }
 
@@ -110,8 +135,6 @@ pub struct TapeMedia {
     pub optimization_done: bool,
     /// Compression enabled flag (driven by mode page).
     pub compression_enabled: bool,
-    /// Simulated compression ratio (e.g., 2.5 for 2.5:1).
-    pub compression_ratio: f64,
     /// Total lifetime load count.
     pub total_loads: u32,
     /// Total meters of tape processed (simulated).
@@ -283,7 +306,6 @@ impl TapeMedia {
             mam,
             optimization_done: !geometry.requires_media_optimization,
             compression_enabled: true,
-            compression_ratio: 2.5,
             total_loads: 0,
             meters_processed: 0.0,
         }
@@ -320,6 +342,31 @@ impl TapeMedia {
             .iter()
             .map(|p| p.bytes_written_compressed)
             .sum()
+    }
+
+    /// Total native bytes read across all partitions.
+    pub fn total_native_bytes_read(&self) -> u64 {
+        self.partitions.iter().map(|p| p.bytes_read_native).sum()
+    }
+
+    /// Total on-disk compressed bytes read across all partitions.
+    pub fn total_bytes_read_compressed(&self) -> u64 {
+        self.partitions
+            .iter()
+            .map(|p| p.bytes_read_compressed)
+            .sum()
+    }
+
+    /// Compute live compression ratio from actual byte counters.
+    /// Returns the ratio (e.g. 2.5 for 2.5:1), or 1.0 if no data written.
+    pub fn compression_ratio(&self) -> f64 {
+        let native = self.total_native_bytes_written() as f64;
+        let compressed = self.total_compressed_bytes_written() as f64;
+        if compressed > 0.0 {
+            native / compressed
+        } else {
+            1.0
+        }
     }
 
     /// Approximate remaining native capacity in bytes.
@@ -361,7 +408,7 @@ impl TapeMedia {
             compressed_bytes_written: self.total_compressed_bytes_written(),
             native_capacity_bytes: self.native_capacity_bytes(),
             compression_enabled: self.compression_enabled,
-            compression_ratio: self.compression_ratio,
+            compression_ratio: self.compression_ratio(),
             total_loads: self.total_loads,
             optimization_done: self.optimization_done,
         }

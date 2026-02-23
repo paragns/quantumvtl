@@ -5,6 +5,47 @@ use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
+/// Compress and write a single block to the store.
+///
+/// Matches real LTO drive behavior: when DCE=1, every block is compressed
+/// and stored as `CompressedData` regardless of whether compression reduced
+/// the size. When DCE=0, blocks are stored as raw `Data`.
+///
+/// Returns `(descriptor, native_bytes, on_disk_bytes)`.
+fn write_block(
+    store: &mut crate::media::store::TapeStore,
+    block: &[u8],
+    compress: bool,
+) -> Result<(RecordDescriptor, u64, u64), ScsiResult> {
+    let native_len = block.len() as u32;
+
+    if compress {
+        // Real LTO drives always run the compression engine when DCE=1.
+        let compressed = zstd::encode_all(block, -3).map_err(|e| {
+            warn!(error = %e, "zstd compression failed");
+            SenseBuilder::medium_error().to_check_condition()
+        })?;
+        let compressed_length = compressed.len() as u32;
+        let (offset, _) = store.append_data(&compressed).map_err(|e| {
+            warn!(error = %e, "failed to append compressed data to tape store");
+            SenseBuilder::medium_error().to_check_condition()
+        })?;
+        let desc = RecordDescriptor::CompressedData {
+            offset,
+            compressed_length,
+            native_length: native_len,
+        };
+        Ok((desc, native_len as u64, compressed_length as u64))
+    } else {
+        let (offset, length) = store.append_data(block).map_err(|e| {
+            warn!(error = %e, "failed to append data to tape store");
+            SenseBuilder::medium_error().to_check_condition()
+        })?;
+        let desc = RecordDescriptor::Data { offset, length };
+        Ok((desc, native_len as u64, native_len as u64))
+    }
+}
+
 /// Handle WRITE(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
 pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
     let fixed = cdb[1] & 0x01 != 0;
@@ -20,10 +61,7 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
         return SenseBuilder::write_protected().to_check_condition();
     }
 
-    // Capture compression settings before borrowing partition mutably
     let compression_enabled = media_state.media.compression_enabled;
-    let compression_ratio = media_state.media.compression_ratio;
-
     let pos = media_state.position.block_number as usize;
     let partition_idx = media_state.position.partition as u32;
 
@@ -38,16 +76,12 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
                 let start = i * block_size;
                 let end = start + block_size;
                 let block = &data_out[start..end];
-                let byte_len = block.len() as u64;
 
-                // Append data to store and get descriptor
-                let desc = match media_state.store.append_data(block) {
-                    Ok((offset, length)) => RecordDescriptor::Data { offset, length },
-                    Err(e) => {
-                        warn!(error = %e, "failed to append data to tape store");
-                        return SenseBuilder::medium_error().to_check_condition();
-                    }
-                };
+                let (desc, native_bytes, on_disk_bytes) =
+                    match write_block(&mut media_state.store, block, compression_enabled) {
+                        Ok(r) => r,
+                        Err(scsi_err) => return scsi_err,
+                    };
 
                 let record_num = media_state.current_partition().records.len() as u64;
                 if let Err(e) = media_state.store.save_record(partition_idx, record_num, &desc) {
@@ -57,26 +91,18 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
 
                 let partition = media_state.current_partition_mut();
                 partition.records.push(desc);
-                partition.bytes_written_native += byte_len;
-                if compression_enabled && compression_ratio > 0.0 {
-                    partition.bytes_written_compressed += (byte_len as f64 / compression_ratio) as u64;
-                } else {
-                    partition.bytes_written_compressed += byte_len;
-                }
+                partition.bytes_written_native += native_bytes;
+                partition.bytes_written_compressed += on_disk_bytes;
             }
             media_state.position.block_number += transfer_length as u64;
         }
     } else {
         // Variable-block mode: data_out is one block
-        let byte_len = data_out.len() as u64;
-
-        let desc = match media_state.store.append_data(data_out) {
-            Ok((offset, length)) => RecordDescriptor::Data { offset, length },
-            Err(e) => {
-                warn!(error = %e, "failed to append data to tape store");
-                return SenseBuilder::medium_error().to_check_condition();
-            }
-        };
+        let (desc, native_bytes, on_disk_bytes) =
+            match write_block(&mut media_state.store, data_out, compression_enabled) {
+                Ok(r) => r,
+                Err(scsi_err) => return scsi_err,
+            };
 
         let record_num = media_state.current_partition().records.len() as u64;
         if let Err(e) = media_state.store.save_record(partition_idx, record_num, &desc) {
@@ -86,12 +112,8 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
 
         let partition = media_state.current_partition_mut();
         partition.records.push(desc);
-        partition.bytes_written_native += byte_len;
-        if compression_enabled && compression_ratio > 0.0 {
-            partition.bytes_written_compressed += (byte_len as f64 / compression_ratio) as u64;
-        } else {
-            partition.bytes_written_compressed += byte_len;
-        }
+        partition.bytes_written_native += native_bytes;
+        partition.bytes_written_compressed += on_disk_bytes;
         media_state.position.block_number += 1;
     }
 
@@ -114,11 +136,24 @@ fn truncate_at_position(media_state: &mut DriveMediaState, pos: usize, partition
             // Find the highest data offset+length among records we're keeping
             let mut max_end: u64 = 0;
             for rec in &partition.records[..pos] {
-                if let RecordDescriptor::Data { offset, length } = rec {
-                    let end = offset + *length as u64;
-                    if end > max_end {
-                        max_end = end;
+                match rec {
+                    RecordDescriptor::Data { offset, length } => {
+                        let end = offset + *length as u64;
+                        if end > max_end {
+                            max_end = end;
+                        }
                     }
+                    RecordDescriptor::CompressedData {
+                        offset,
+                        compressed_length,
+                        ..
+                    } => {
+                        let end = offset + *compressed_length as u64;
+                        if end > max_end {
+                            max_end = end;
+                        }
+                    }
+                    RecordDescriptor::Filemark => {}
                 }
             }
             max_end

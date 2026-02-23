@@ -4,6 +4,8 @@
 //! ModePage trait. The framework handles header construction, page code
 //! dispatch, and PC (page control) field semantics.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Page Control field values from MODE SENSE CDB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -186,10 +188,79 @@ impl ModePage for StubModePage {
     }
 }
 
+// --- Data Compression mode page (0Fh) ---
+
+/// Real Data Compression mode page backed by an `Arc<AtomicBool>` for DCE.
+pub struct DataCompressionModePage {
+    dce: Arc<AtomicBool>,
+}
+
+impl DataCompressionModePage {
+    pub fn new(dce: Arc<AtomicBool>) -> Self {
+        Self { dce }
+    }
+
+    fn build_data(&self, dce_on: bool) -> Vec<u8> {
+        let mut data = vec![0u8; 14];
+        // Byte 0: DCC=1 (bit 6, device capable), DCE=dce_on (bit 7)
+        data[0] = 0x40; // DCC=1
+        if dce_on {
+            data[0] |= 0x80; // DCE=1
+        }
+        // Bytes 2-5: Compression algorithm (00 00 00 FF = unregistered/default)
+        data[2] = 0x00;
+        data[3] = 0x00;
+        data[4] = 0x00;
+        data[5] = 0xFF;
+        // Bytes 6-9: Decompression algorithm (00 00 00 FF)
+        data[6] = 0x00;
+        data[7] = 0x00;
+        data[8] = 0x00;
+        data[9] = 0xFF;
+        data
+    }
+}
+
+impl ModePage for DataCompressionModePage {
+    fn page_code(&self) -> u8 {
+        0x0F
+    }
+
+    fn page_data(&self, pc: PageControl) -> Vec<u8> {
+        match pc {
+            PageControl::Current | PageControl::Saved => {
+                self.build_data(self.dce.load(Ordering::Relaxed))
+            }
+            PageControl::Default => self.build_data(true), // default is compression on
+            PageControl::Changeable => {
+                let mut data = vec![0u8; 14];
+                data[0] = 0x80; // only DCE bit is changeable
+                data
+            }
+        }
+    }
+
+    fn page_length(&self) -> u8 {
+        14
+    }
+
+    fn saveable(&self) -> bool {
+        true
+    }
+
+    fn apply_select(&self, data: &[u8]) -> Result<(), &'static str> {
+        if data.is_empty() {
+            return Err("no data for compression page");
+        }
+        let dce = data[0] & 0x80 != 0;
+        self.dce.store(dce, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 /// Create the default mode page registry with stub implementations for all
-/// mandatory mode pages. These will be replaced with real implementations
-/// in Track B.
-pub fn default_registry() -> ModePageRegistry {
+/// mandatory mode pages, plus the real Data Compression mode page (0Fh).
+pub fn default_registry(dce: Arc<AtomicBool>) -> ModePageRegistry {
     let mut reg = ModePageRegistry::new();
 
     // MP 01h: Read-Write Error Recovery (12 bytes)
@@ -207,15 +278,8 @@ pub fn default_registry() -> ModePageRegistry {
     // MP 0Ah[F0h]: Control Data Protection (4 bytes)
     reg.register(Box::new(StubModePage::with_subpage(0x0A, 0xF0, vec![0; 4])));
 
-    // MP 0Fh: Data Compression — DCE=1 (enabled), DCC=1 (capable)
-    let mut compression = vec![0u8; 14];
-    compression[0] = 0xC0; // DCE=1, DCC=1
-    // Compression algorithm: 00 00 00 FF (unregistered/default)
-    compression[2] = 0x00;
-    compression[3] = 0x00;
-    compression[4] = 0x00;
-    compression[5] = 0xFF;
-    reg.register(Box::new(StubModePage::new(0x0F, compression)));
+    // MP 0Fh: Data Compression — real implementation with shared DCE flag
+    reg.register(Box::new(DataCompressionModePage::new(dce)));
 
     // MP 10h: Device Configuration (14 bytes)
     let mut dev_config = vec![0u8; 14];

@@ -38,7 +38,7 @@ pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResul
     }
 }
 
-/// Read record data from the store via its descriptor.
+/// Read record data from the store via its descriptor, decompressing if needed.
 fn read_record_data(ms: &mut DriveMediaState, desc: &RecordDescriptor) -> Result<Vec<u8>, ScsiResult> {
     match desc {
         RecordDescriptor::Data { offset, length } => {
@@ -47,14 +47,28 @@ fn read_record_data(ms: &mut DriveMediaState, desc: &RecordDescriptor) -> Result
                 SenseBuilder::medium_error().to_check_condition()
             })
         }
+        RecordDescriptor::CompressedData {
+            offset,
+            compressed_length,
+            ..
+        } => {
+            let compressed = ms.store.read_data(*offset, *compressed_length).map_err(|e| {
+                warn!(error = %e, "failed to read compressed data from tape store");
+                SenseBuilder::medium_error().to_check_condition()
+            })?;
+            zstd::decode_all(compressed.as_slice()).map_err(|e| {
+                warn!(error = %e, "failed to decompress tape record");
+                SenseBuilder::medium_error().to_check_condition()
+            })
+        }
         RecordDescriptor::Filemark => unreachable!(),
     }
 }
 
 fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
-    // Get the block size from the first block we'll read
+    // Get the native block size from the first block we'll read
     let first_pos = ms.position.block_number as usize;
-    let block_size = ms.current_partition().records[first_pos].byte_len() as usize;
+    let block_size = ms.current_partition().records[first_pos].native_byte_len() as usize;
 
     let mut data = Vec::with_capacity(block_size * block_count as usize);
     let mut blocks_read: u32 = 0;
@@ -74,14 +88,17 @@ fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
 
         // Clone the descriptor to avoid borrow conflict
         let desc = ms.current_partition().records[pos].clone();
+        let on_disk_bytes = desc.byte_len() as u64;
         let block_data = match read_record_data(ms, &desc) {
             Ok(d) => d,
             Err(scsi_err) => return scsi_err,
         };
 
-        let byte_len = block_data.len() as u64;
+        let native_bytes = block_data.len() as u64;
         data.extend_from_slice(&block_data);
-        ms.current_partition_mut().bytes_read_native += byte_len;
+        let part = ms.current_partition_mut();
+        part.bytes_read_native += native_bytes;
+        part.bytes_read_compressed += on_disk_bytes;
         ms.position.block_number += 1;
         blocks_read += 1;
     }
@@ -101,13 +118,16 @@ fn handle_read_variable(max_bytes: u32, ms: &mut DriveMediaState) -> ScsiResult 
 
     // Clone the descriptor to avoid borrow conflict
     let desc = ms.current_partition().records[pos].clone();
+    let on_disk_bytes = desc.byte_len() as u64;
     let block_data = match read_record_data(ms, &desc) {
         Ok(d) => d,
         Err(scsi_err) => return scsi_err,
     };
 
-    let byte_len = block_data.len() as u64;
-    ms.current_partition_mut().bytes_read_native += byte_len;
+    let native_bytes = block_data.len() as u64;
+    let part = ms.current_partition_mut();
+    part.bytes_read_native += native_bytes;
+    part.bytes_read_compressed += on_disk_bytes;
     ms.position.block_number += 1;
 
     let mut result_data = block_data;

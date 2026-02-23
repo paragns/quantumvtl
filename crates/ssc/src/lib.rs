@@ -14,19 +14,20 @@ pub mod timing;
 pub mod vpd;
 
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
 use tracing::{trace, warn};
 
 use commands::opcodes::*;
+use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
 use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
 use media::tape::{DriveMediaState, TapeMedia};
 pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
 use mode_pages::ModePageRegistry;
-use log_pages::LogPageRegistry;
 use snapshot::{DriveActivity, DriveSnapshot};
 
 /// Internal drive state protected by a mutex.
@@ -55,6 +56,10 @@ pub struct TapeDrive {
     mode_pages: ModePageRegistry,
     /// Log page registry.
     log_pages: LogPageRegistry,
+    /// Shared compression-enable flag (driven by Mode Page 0Fh).
+    compression_enabled: Arc<AtomicBool>,
+    /// Shared drive statistics (consumed by live log pages).
+    drive_stats: SharedDriveStats,
 }
 
 impl TapeDrive {
@@ -99,6 +104,9 @@ impl TapeDrive {
         inq[62] = 0x05;
         inq[63] = 0x60;
 
+        let dce = Arc::new(AtomicBool::new(true)); // default: compression enabled
+        let drive_stats: SharedDriveStats = Arc::new(Mutex::new(DriveStats::default()));
+
         Self {
             inquiry_data: inq,
             serial: serial.to_string(),
@@ -109,8 +117,44 @@ impl TapeDrive {
                 activity: DriveActivity::Empty,
                 backhitch_count: 0,
             }),
-            mode_pages: mode_pages::default_registry(),
-            log_pages: log_pages::default_registry(),
+            mode_pages: mode_pages::default_registry(dce.clone()),
+            log_pages: log_pages::default_registry(drive_stats.clone()),
+            compression_enabled: dce,
+            drive_stats,
+        }
+    }
+
+    /// Refresh shared DriveStats from current media state.
+    /// Must be called with DriveState already locked.
+    fn refresh_stats(drive_stats: &SharedDriveStats, media_state: Option<&DriveMediaState>, generation: LtoGeneration) {
+        let mut s = drive_stats.lock().unwrap();
+        match media_state {
+            Some(ms) => {
+                let geometry = generation.geometry();
+                s.media_loaded = true;
+                s.native_capacity_bytes = geometry.native_capacity_bytes;
+                s.buffer_size_bytes = geometry.buffer_size_bytes;
+                s.total_bytes_written_native = ms.media.total_native_bytes_written();
+                s.total_bytes_written_compressed = ms.media.total_compressed_bytes_written();
+                s.total_bytes_read_native = ms.media.total_native_bytes_read();
+                s.total_bytes_read_compressed = ms.media.total_bytes_read_compressed();
+                s.partition_count = ms.media.partitions.len() as u8;
+                s.partition_native_written = ms.media.partitions.iter()
+                    .map(|p| p.bytes_written_native).collect();
+                s.partition_compressed_written = ms.media.partitions.iter()
+                    .map(|p| p.bytes_written_compressed).collect();
+                s.partition_remaining_bytes = ms.media.partitions.iter()
+                    .map(|p| {
+                        let per_partition_cap = geometry.native_capacity_bytes
+                            / ms.media.partitions.len() as u64;
+                        per_partition_cap.saturating_sub(p.bytes_written_native)
+                    }).collect();
+                s.total_loads = ms.media.total_loads;
+                s.compression_enabled = ms.media.compression_enabled;
+            }
+            None => {
+                *s = DriveStats::default();
+            }
         }
     }
 
@@ -148,7 +192,7 @@ impl TapeDrive {
                     operation_progress_pct: None,
                     instantaneous_rate_bytes_sec: None,
                     compression_ratio: if ms.media.compression_enabled {
-                        Some(ms.media.compression_ratio)
+                        Some(ms.media.compression_ratio())
                     } else {
                         None
                     },
@@ -215,6 +259,7 @@ impl MediaLoadNotify for TapeDrive {
                         bytes_written_native: stats.bytes_written_native,
                         bytes_written_compressed: stats.bytes_written_compressed,
                         bytes_read_native: stats.bytes_read_native,
+                        bytes_read_compressed: stats.bytes_read_compressed,
                     };
                     partition.rebuild_filemark_index();
                     partitions.push(partition);
@@ -233,7 +278,6 @@ impl MediaLoadNotify for TapeDrive {
                     mam,
                     optimization_done: meta.optimization_done,
                     compression_enabled: meta.compression_enabled,
-                    compression_ratio: meta.compression_ratio,
                     total_loads: meta.total_loads,
                     meters_processed: meta.meters_processed,
                 }
@@ -251,6 +295,16 @@ impl MediaLoadNotify for TapeDrive {
 
         media.record_load();
 
+        // Sync compression_enabled AtomicBool from media state
+        self.compression_enabled
+            .store(media.compression_enabled, Ordering::Relaxed);
+
+        // Set MAM capacity attributes (8-byte big-endian MB values)
+        let cap_mb = media.native_capacity_bytes() / 1_000_000;
+        let remaining_mb = media.approximate_remaining_mb();
+        media.mam.set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
+        media.mam.set_device_managed(0x0001, cap_mb.to_be_bytes().to_vec());
+
         // Persist the initial metadata (including updated load count)
         if let Err(e) = store.save_media_meta(&media) {
             warn!(barcode, error = %e, "failed to persist initial media metadata");
@@ -262,6 +316,9 @@ impl MediaLoadNotify for TapeDrive {
         st.media_state = Some(DriveMediaState::new(media, store));
         st.activity = DriveActivity::Idle;
         st.backhitch_count = 0;
+
+        // Refresh shared stats for log pages
+        Self::refresh_stats(&self.drive_stats, st.media_state.as_ref(), self.generation);
     }
 
     fn media_unloaded(&self) {
@@ -269,8 +326,20 @@ impl MediaLoadNotify for TapeDrive {
         trace!("tape media unloaded from drive");
 
         // Flush final metadata to store before dropping
-        if let Some(ref ms) = st.media_state {
-            let barcode = &ms.media.barcode;
+        if let Some(ref mut ms) = st.media_state {
+            let barcode = ms.media.barcode.clone();
+
+            // Sync compression flag from AtomicBool back to media
+            ms.media.compression_enabled = self.compression_enabled.load(Ordering::Relaxed);
+
+            // Update MAM capacity attributes (8-byte big-endian MB values)
+            let remaining_mb = ms.media.approximate_remaining_mb();
+            ms.media.mam.set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
+            let written_mb = ms.media.total_native_bytes_written() / 1_000_000;
+            ms.media.mam.set_device_managed(0x0220, written_mb.to_be_bytes().to_vec());
+            let read_mb = ms.media.total_native_bytes_read() / 1_000_000;
+            ms.media.mam.set_device_managed(0x0222, read_mb.to_be_bytes().to_vec());
+
             if let Err(e) = ms.store.save_media_meta(&ms.media) {
                 warn!(barcode, error = %e, "failed to persist media metadata on unload");
             }
@@ -284,6 +353,9 @@ impl MediaLoadNotify for TapeDrive {
             }
             trace!(barcode, "flushed tape metadata to redb store");
         }
+
+        // Update shared stats (media unloaded)
+        Self::refresh_stats(&self.drive_stats, None, self.generation);
 
         // Drop the DriveMediaState — redb + file handles close automatically
         st.media_state = None;
@@ -361,10 +433,15 @@ impl ScsiDevice for TapeDrive {
             None => return sense::SenseBuilder::no_media().to_check_condition(),
         };
 
-        match opcode {
+        let result = match opcode {
             REWIND => commands::position::handle_rewind(media_state),
             READ_6 => commands::read::handle_read_6(cdb, media_state),
-            WRITE_6 => commands::write::handle_write_6(cdb, data_out, media_state),
+            WRITE_6 => {
+                // Sync compression flag from AtomicBool before writing
+                media_state.media.compression_enabled =
+                    self.compression_enabled.load(Ordering::Relaxed);
+                commands::write::handle_write_6(cdb, data_out, media_state)
+            }
             WRITE_FILEMARKS_6 => commands::filemarks::handle_write_filemarks(cdb, media_state),
             SPACE_6 => commands::position::handle_space_6(cdb, media_state),
             SPACE_16 => commands::position::handle_space_16(cdb, media_state),
@@ -383,6 +460,21 @@ impl ScsiDevice for TapeDrive {
                 trace!(opcode = format!("{:02X}h", opcode), "unsupported SSC command");
                 sense::SenseBuilder::invalid_opcode().to_check_condition()
             }
+        };
+
+        // Refresh shared stats after data-path commands
+        match opcode {
+            WRITE_6 | READ_6 | WRITE_FILEMARKS_6 | SPACE_6 | SPACE_16 | ERASE_6
+            | FORMAT_MEDIUM => {
+                Self::refresh_stats(
+                    &self.drive_stats,
+                    st.media_state.as_ref(),
+                    self.generation,
+                );
+            }
+            _ => {}
         }
+
+        result
     }
 }
