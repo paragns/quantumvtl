@@ -6,11 +6,13 @@ pub const OPCODE_NOP_OUT: u8 = 0x00;
 pub const OPCODE_SCSI_CMD: u8 = 0x01;
 pub const OPCODE_LOGIN_REQ: u8 = 0x03;
 pub const OPCODE_TEXT_REQ: u8 = 0x04;
+pub const OPCODE_DATA_OUT: u8 = 0x05;
 pub const OPCODE_LOGOUT_REQ: u8 = 0x06;
 
 /// iSCSI opcodes (target → initiator).
 pub const OPCODE_NOP_IN: u8 = 0x20;
 pub const OPCODE_SCSI_RESP: u8 = 0x21;
+pub const OPCODE_R2T: u8 = 0x31;
 pub const OPCODE_SCSI_DATA_IN: u8 = 0x25;
 pub const OPCODE_LOGIN_RESP: u8 = 0x23;
 pub const OPCODE_TEXT_RESP: u8 = 0x24;
@@ -185,6 +187,30 @@ impl Pdu {
     /// Transit bit (T) from Login flags byte 1, bit 7.
     pub fn login_transit(&self) -> bool {
         self.bhs[1] & 0x80 != 0
+    }
+
+    /// Buffer Offset (bytes 40-43) — in R2T and Data-Out PDUs.
+    pub fn buffer_offset(&self) -> u32 {
+        u32::from_be_bytes(self.bhs[40..44].try_into().unwrap())
+    }
+
+    pub fn set_buffer_offset(&mut self, offset: u32) {
+        self.bhs[40..44].copy_from_slice(&offset.to_be_bytes());
+    }
+
+    /// Desired Data Transfer Length (bytes 44-47) — in R2T PDUs.
+    pub fn set_desired_data_transfer_length(&mut self, len: u32) {
+        self.bhs[44..48].copy_from_slice(&len.to_be_bytes());
+    }
+
+    /// R2TSN (bytes 36-39) — in R2T PDUs.
+    pub fn set_r2t_sn(&mut self, sn: u32) {
+        self.bhs[36..40].copy_from_slice(&sn.to_be_bytes());
+    }
+
+    /// DataSN (bytes 36-39) — in Data-Out PDUs.
+    pub fn data_sn(&self) -> u32 {
+        u32::from_be_bytes(self.bhs[36..40].try_into().unwrap())
     }
 
     /// Read a PDU from an async reader.
@@ -370,6 +396,35 @@ pub fn build_logout_response(
     pdu.set_stat_sn(stat_sn);
     pdu.set_exp_cmd_sn(exp_cmd_sn);
     pdu.set_max_cmd_sn(max_cmd_sn);
+    pdu
+}
+
+/// Build an R2T (Ready to Transfer) PDU.
+///
+/// Solicits Data-Out PDUs from the initiator for write commands.
+pub fn build_r2t(
+    lun: u64,
+    itt: u32,
+    ttt: u32,
+    stat_sn: u32,
+    exp_cmd_sn: u32,
+    max_cmd_sn: u32,
+    r2t_sn: u32,
+    buffer_offset: u32,
+    desired_data_transfer_length: u32,
+) -> Pdu {
+    let mut pdu = Pdu::new();
+    pdu.set_opcode(OPCODE_R2T);
+    pdu.set_flags(0x80); // F=1
+    pdu.set_lun(lun);
+    pdu.set_itt(itt);
+    pdu.set_ttt(ttt);
+    pdu.set_stat_sn(stat_sn);
+    pdu.set_exp_cmd_sn(exp_cmd_sn);
+    pdu.set_max_cmd_sn(max_cmd_sn);
+    pdu.set_r2t_sn(r2t_sn);
+    pdu.set_buffer_offset(buffer_offset);
+    pdu.set_desired_data_transfer_length(desired_data_transfer_length);
     pdu
 }
 

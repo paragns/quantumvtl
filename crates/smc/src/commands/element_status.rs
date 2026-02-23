@@ -19,8 +19,6 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
         return SenseBuilder::invalid_field_in_cdb().to_check_condition();
     }
 
-    let end_addr = start_addr.saturating_add(num_elements);
-
     // Determine which element types to report
     let types_to_report: Vec<u8> = if type_filter == 0 {
         vec![ELEM_MTE, ELEM_STE, ELEM_IEE, ELEM_DTE]
@@ -29,20 +27,37 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
     };
 
     // Descriptor length depends on voltag
-    // Base: 12 bytes; with voltag: +36 = 48 bytes
+    // Base: 12 bytes; with voltag: +40 = 52 bytes
     let desc_len: u16 = if voltag { 52 } else { 16 };
+
+    // Collect ALL elements with addr >= start_addr matching the type filter,
+    // then limit to num_elements total.  The SCSI spec says num_elements is
+    // a maximum count, NOT an address range.
+    let mut all_matching: Vec<(u16, u8)> = Vec::new();
+    for (&addr, elem) in &st.elements {
+        if addr < start_addr {
+            continue;
+        }
+        let dominated = type_filter != 0 && elem.element_type != type_filter;
+        if dominated {
+            continue;
+        }
+        all_matching.push((addr, elem.element_type));
+    }
+    // BTreeMap iterates in address order, so all_matching is already sorted.
+    all_matching.truncate(num_elements as usize);
 
     // Build per-type pages
     let mut report_data = Vec::new();
     let mut total_elements_reported: u16 = 0;
 
     for &etype in &types_to_report {
-        // Collect elements of this type within the requested range
-        let descriptors: Vec<_> = st
-            .elements
+        // Collect elements of this type from the count-limited set
+        let descriptors: Vec<_> = all_matching
             .iter()
-            .filter(|(&addr, elem)| {
-                elem.element_type == etype && addr >= start_addr && addr < end_addr
+            .filter(|&&(_, et)| et == etype)
+            .filter_map(|&(addr, _)| {
+                st.elements.get(&addr).map(|elem| (addr, elem))
             })
             .collect();
 
@@ -66,12 +81,12 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
 
         report_data.extend_from_slice(&page_header);
 
-        for (&addr, elem) in &descriptors {
+        for (addr, elem) in &descriptors {
             let mut desc = vec![0u8; desc_len as usize];
 
             // Bytes 0-1: Element address
             desc[0] = (addr >> 8) as u8;
-            desc[1] = addr as u8;
+            desc[1] = *addr as u8;
 
             // Byte 2: Status flags
             let mut flags: u8 = 0x00;
@@ -172,10 +187,10 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
     // Bytes 2-3: Number of elements available
     response.push((total_elements_reported >> 8) as u8);
     response.push(total_elements_reported as u8);
-    // Bytes 4-5: Reserved
+    // Byte 4: Reserved
     response.push(0x00);
-    response.push(0x00);
-    // Bytes 6-7: Byte count of report available
+    // Bytes 5-7: Byte count of report available (3 bytes)
+    response.push(((byte_count >> 16) & 0xFF) as u8);
     response.push(((byte_count >> 8) & 0xFF) as u8);
     response.push((byte_count & 0xFF) as u8);
 

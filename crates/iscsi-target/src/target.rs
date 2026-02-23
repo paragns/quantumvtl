@@ -150,19 +150,67 @@ async fn handle_connection(
                 let edtl = req.expected_data_transfer_length();
                 let flags = req.flags();
                 let read_bit = flags & 0x40 != 0;
+                let write_bit = flags & 0x20 != 0;
 
                 // Track CmdSN
                 if !req.is_immediate() {
                     exp_cmd_sn = exp_cmd_sn.wrapping_add(1);
                 }
 
-                debug!(lun, cdb0 = cdb[0], edtl, read = read_bit, "SCSI command");
+                debug!(lun, cdb0 = cdb[0], edtl, read = read_bit, write = write_bit, "SCSI command");
+
+                // Collect write data via R2T/Data-Out if this is a write command.
+                let write_data = if write_bit && edtl > 0 {
+                    // Start with any immediate data from the command PDU.
+                    let mut data = req.data.clone();
+
+                    if (data.len() as u32) < edtl {
+                        // Send R2T to solicit remaining data.
+                        let remaining = edtl - data.len() as u32;
+                        let ttt = itt; // Use ITT as TTT for simplicity.
+                        let r2t = pdu::build_r2t(
+                            lun_raw, itt, ttt,
+                            stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
+                            0, // R2TSN
+                            data.len() as u32, // buffer offset = amount already received
+                            remaining,
+                        );
+                        r2t.write_to(&mut writer).await?;
+
+                        // Receive Data-Out PDUs until we have all data.
+                        loop {
+                            let data_pdu = Pdu::read_from(&mut reader).await?;
+                            if data_pdu.opcode() != pdu::OPCODE_DATA_OUT {
+                                warn!(opcode = data_pdu.opcode(), "expected Data-Out PDU during R2T");
+                                break;
+                            }
+
+                            let buf_offset = data_pdu.buffer_offset() as usize;
+                            let chunk = &data_pdu.data;
+
+                            // Place data at the correct offset.
+                            if buf_offset + chunk.len() > data.len() {
+                                data.resize(buf_offset + chunk.len(), 0);
+                            }
+                            data[buf_offset..buf_offset + chunk.len()].copy_from_slice(chunk);
+
+                            // F bit = final Data-Out for this R2T sequence.
+                            if data_pdu.flags() & 0x80 != 0 {
+                                break;
+                            }
+                        }
+                    }
+
+                    data
+                } else {
+                    req.data.clone()
+                };
 
                 let result = if cdb[0] == 0xA0 {
                     // REPORT LUNS — handle at the target level
                     handle_report_luns(&target, cdb)
                 } else if let Some(device) = target.luns.get(&lun) {
-                    device.execute_command(cdb, &req.data)
+                    device.execute_command(cdb, &write_data)
                 } else {
                     warn!(lun, "unknown LUN");
                     // ILLEGAL REQUEST: LOGICAL UNIT NOT SUPPORTED
