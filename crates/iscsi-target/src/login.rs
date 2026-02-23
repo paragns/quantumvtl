@@ -33,6 +33,7 @@ pub fn serialize_kv_pairs(pairs: &[(&str, &str)]) -> Vec<u8> {
 pub struct LoginNegotiator {
     pub target_name: String,
     pub tsih: u16,
+    pub initiator_name: Option<String>,
     next_tsih: u16,
 }
 
@@ -41,6 +42,7 @@ impl LoginNegotiator {
         Self {
             target_name,
             tsih: 0,
+            initiator_name: None,
             next_tsih: 1,
         }
     }
@@ -85,7 +87,7 @@ impl LoginNegotiator {
         stat_sn: u32,
         exp_cmd_sn: u32,
     ) -> Pdu {
-        // Validate target name if provided
+        // Validate target name and capture initiator name
         for (k, v) in kv {
             if k == "TargetName" && v != &self.target_name {
                 warn!(target = %v, expected = %self.target_name, "target name mismatch");
@@ -95,6 +97,9 @@ impl LoginNegotiator {
                     2, 3, // Not Found
                     Vec::new(),
                 );
+            }
+            if k == "InitiatorName" {
+                self.initiator_name = Some(v.clone());
             }
         }
 

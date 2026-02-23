@@ -8,6 +8,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::login::LoginNegotiator;
 use crate::pdu::{self, Pdu};
+use crate::session::{SessionGuard, SessionInfo, SessionRegistry};
 use crate::{ScsiDevice, ScsiResult};
 
 /// An iSCSI target with a name and a set of LUNs.
@@ -32,12 +33,14 @@ impl Target {
 /// iSCSI target server that listens for connections.
 pub struct TargetServer {
     target: Arc<Target>,
+    pub registry: Arc<SessionRegistry>,
 }
 
 impl TargetServer {
-    pub fn new(target: Target) -> Self {
+    pub fn new(target: Target, registry: Arc<SessionRegistry>) -> Self {
         Self {
             target: Arc::new(target),
+            registry,
         }
     }
 
@@ -58,8 +61,10 @@ impl TargetServer {
                     info!(%peer, "new iSCSI connection");
                     let target = self.target.clone();
                     let shutdown = shutdown.clone();
+                    let registry = self.registry.clone();
+                    let peer_str = peer.to_string();
                     tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, target, shutdown).await {
+                        if let Err(e) = handle_connection(stream, target, shutdown, registry, &peer_str).await {
                             error!(%peer, "connection error: {e}");
                         }
                         debug!(%peer, "connection closed");
@@ -96,6 +101,8 @@ async fn handle_connection(
     stream: TcpStream,
     target: Arc<Target>,
     shutdown: Arc<Notify>,
+    registry: Arc<SessionRegistry>,
+    peer_addr: &str,
 ) -> std::io::Result<()> {
     stream.set_nodelay(true)?;
     let (reader, writer) = stream.into_split();
@@ -106,6 +113,7 @@ async fn handle_connection(
     let mut stat_sn: u32 = 0;
     let mut exp_cmd_sn: u32 = 1;
     let mut logged_in = false;
+    let mut guard = SessionGuard::new(registry.clone());
 
     loop {
         let req = tokio::select! {
@@ -136,7 +144,24 @@ async fn handle_connection(
                 // Check if login completed (transit to FFP, status=success)
                 if resp.bhs[36] == 0 && resp.login_transit() && resp.login_nsg() == 3 {
                     logged_in = true;
-                    info!("login complete, entering Full Feature Phase");
+                    let tsih = login.tsih;
+                    let initiator = login
+                        .initiator_name
+                        .clone()
+                        .unwrap_or_else(|| "unknown".into());
+                    info!(initiator = %initiator, tsih, "login complete, entering Full Feature Phase");
+                    registry.register(
+                        tsih,
+                        SessionInfo {
+                            initiator_name: initiator,
+                            tsih,
+                            peer_addr: peer_addr.to_string(),
+                            connected_since: chrono::Utc::now()
+                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            active_commands: 0,
+                        },
+                    );
+                    guard.set_tsih(tsih);
                 }
 
                 resp.write_to(&mut writer).await?;

@@ -4,6 +4,7 @@ use rand::Rng;
 use tokio::sync::{Notify, broadcast};
 use tracing::{error, info};
 
+use iscsi_target::SessionRegistry;
 use iscsi_target::target::{Target, TargetServer};
 use smc::MediaChanger;
 use ssc::TapeDrive;
@@ -96,6 +97,8 @@ async fn main() -> anyhow::Result<()> {
         drive_notifiers,
     ));
 
+    let session_registry = Arc::new(SessionRegistry::new());
+
     let admin_state = AdminState {
         store,
         users: config.users,
@@ -104,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         version: VERSION,
         changer: changer.clone(),
         drives: drive_arcs.clone(),
+        session_registry: session_registry.clone(),
     };
 
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
@@ -114,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let iscsi_addr = format!("{}:{}", config.listen.host, config.iscsi.port);
-    let iscsi_server = TargetServer::new(iscsi_target);
+    let iscsi_server = TargetServer::new(iscsi_target, session_registry);
     let iscsi_shutdown = shutdown.clone();
     tokio::spawn(async move {
         if let Err(e) = iscsi_server.run(&iscsi_addr, iscsi_shutdown).await {

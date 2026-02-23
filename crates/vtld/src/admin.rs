@@ -16,6 +16,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::info;
 use utoipa::OpenApi;
 
+use iscsi_target::SessionRegistry;
 use smc::{ElementType, MediaChanger};
 use ssc::TapeDrive;
 
@@ -32,6 +33,7 @@ pub struct AdminState {
     pub version: &'static str,
     pub changer: Arc<MediaChanger>,
     pub drives: Vec<Arc<TapeDrive>>,
+    pub session_registry: Arc<SessionRegistry>,
 }
 
 #[derive(Embed)]
@@ -112,6 +114,85 @@ struct LibrarySnapshot {
 struct ConfigEntry {
     key: String,
     value: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ChangerDetailResponse {
+    vendor: String,
+    product: String,
+    serial: String,
+    firmware_version: String,
+    state: String,
+    temperature_c: u8,
+    humidity_pct: u8,
+    total_moves: u64,
+    picker_position: u16,
+    active_alerts: Vec<u16>,
+    prevent_medium_removal: bool,
+    num_drives: u16,
+    num_slots: u16,
+    num_import_export: u16,
+    elements: Vec<ElementDetailResponse>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ElementDetailResponse {
+    address: u16,
+    element_type: String,
+    full: bool,
+    barcode: Option<String>,
+    source_element: u16,
+    access: bool,
+    except: bool,
+    disabled: bool,
+    asc_ascq: Option<[u8; 2]>,
+    medium_type: String,
+    import_export: bool,
+    operator_intervention: bool,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct DriveDetailResponse {
+    id: usize,
+    serial: String,
+    generation: String,
+    loaded: bool,
+    barcode: Option<String>,
+    write_protected: bool,
+    worm: bool,
+    partition: u8,
+    block_number: u64,
+    file_number: u64,
+    at_bop: bool,
+    at_eod: bool,
+    current_wrap: Option<u32>,
+    total_wraps: Option<u32>,
+    position_in_wrap_pct: Option<f64>,
+    write_buffer_pct: f64,
+    read_cache_pct: f64,
+    objects_in_buffer: u32,
+    buffer_state: String,
+    drive_state: String,
+    tape_speed: Option<u8>,
+    operation_progress_pct: Option<f64>,
+    instantaneous_rate_bytes_sec: Option<u64>,
+    compression_ratio: Option<f64>,
+    backhitch_count_this_mount: u32,
+    capacity_used_pct: Option<f64>,
+    native_bytes_written: u64,
+    compressed_bytes_written: u64,
+    approximate_remaining_mb: Option<u64>,
+    total_loads: u32,
+    motion_hours: f64,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct SessionResponse {
+    initiator_name: String,
+    tsih: u16,
+    peer_addr: String,
+    connected_since: String,
+    active_commands: u32,
 }
 
 // --- Handlers ---
@@ -369,6 +450,140 @@ async fn config_show(
     Ok(Json(resp))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/vtl/changer",
+    tag = "VTL",
+    responses(
+        (status = 200, description = "Detailed changer status", body = ChangerDetailResponse)
+    )
+)]
+async fn vtl_changer(State(state): State<AdminState>) -> Json<ChangerDetailResponse> {
+    let snap = state.changer.snapshot();
+    let elements: Vec<ElementDetailResponse> = snap
+        .elements
+        .iter()
+        .map(|e| {
+            let element_type = match e.element_type {
+                ElementType::Transport => "transport",
+                ElementType::Storage => "storage",
+                ElementType::ImportExport => "import_export",
+                ElementType::DataTransfer => "data_transfer",
+            }
+            .to_string();
+            ElementDetailResponse {
+                address: e.address,
+                element_type,
+                full: e.full,
+                barcode: e.barcode.clone(),
+                source_element: e.source_element,
+                access: e.access,
+                except: e.except,
+                disabled: e.disabled,
+                asc_ascq: e.asc_ascq.map(|(a, b)| [a, b]),
+                medium_type: format!("{:?}", e.medium_type),
+                import_export: e.import_export,
+                operator_intervention: e.operator_intervention,
+            }
+        })
+        .collect();
+    let state_str = format!("{:?}", snap.state);
+    Json(ChangerDetailResponse {
+        vendor: snap.vendor,
+        product: snap.product,
+        serial: snap.serial,
+        firmware_version: snap.firmware_version,
+        state: state_str,
+        temperature_c: snap.temperature_c,
+        humidity_pct: snap.humidity_pct,
+        total_moves: snap.total_moves,
+        picker_position: snap.picker_position,
+        active_alerts: snap.active_alerts,
+        prevent_medium_removal: snap.prevent_medium_removal,
+        num_drives: snap.num_drives,
+        num_slots: snap.num_slots,
+        num_import_export: snap.num_import_export,
+        elements,
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/drives/{id}",
+    tag = "VTL",
+    params(
+        ("id" = usize, Path, description = "Drive index (0-based)")
+    ),
+    responses(
+        (status = 200, description = "Detailed drive status", body = DriveDetailResponse),
+        (status = 404, description = "Drive not found")
+    )
+)]
+async fn vtl_drive_detail(
+    State(state): State<AdminState>,
+    axum::extract::Path(id): axum::extract::Path<usize>,
+) -> Result<Json<DriveDetailResponse>, StatusCode> {
+    let drive = state.drives.get(id).ok_or(StatusCode::NOT_FOUND)?;
+    let snap = drive.snapshot();
+    Ok(Json(DriveDetailResponse {
+        id,
+        serial: snap.serial,
+        generation: format!("{:?}", snap.generation),
+        loaded: snap.loaded,
+        barcode: snap.barcode,
+        write_protected: snap.write_protected,
+        worm: snap.worm,
+        partition: snap.partition,
+        block_number: snap.block_number,
+        file_number: snap.file_number,
+        at_bop: snap.at_bop,
+        at_eod: snap.at_eod,
+        current_wrap: snap.current_wrap,
+        total_wraps: snap.total_wraps,
+        position_in_wrap_pct: snap.position_in_wrap_pct,
+        write_buffer_pct: snap.write_buffer_pct,
+        read_cache_pct: snap.read_cache_pct,
+        objects_in_buffer: snap.objects_in_buffer,
+        buffer_state: snap.buffer_state,
+        drive_state: snap.drive_state.display_name().to_string(),
+        tape_speed: snap.tape_speed,
+        operation_progress_pct: snap.operation_progress_pct,
+        instantaneous_rate_bytes_sec: snap.instantaneous_rate_bytes_sec,
+        compression_ratio: snap.compression_ratio,
+        backhitch_count_this_mount: snap.backhitch_count_this_mount,
+        capacity_used_pct: snap.capacity_used_pct,
+        native_bytes_written: snap.native_bytes_written,
+        compressed_bytes_written: snap.compressed_bytes_written,
+        approximate_remaining_mb: snap.approximate_remaining_mb,
+        total_loads: snap.total_loads,
+        motion_hours: snap.motion_hours,
+    }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/sessions",
+    tag = "VTL",
+    responses(
+        (status = 200, description = "Active iSCSI sessions", body = Vec<SessionResponse>)
+    )
+)]
+async fn vtl_sessions(State(state): State<AdminState>) -> Json<Vec<SessionResponse>> {
+    let sessions: Vec<SessionResponse> = state
+        .session_registry
+        .snapshot()
+        .into_iter()
+        .map(|s| SessionResponse {
+            initiator_name: s.initiator_name,
+            tsih: s.tsih,
+            peer_addr: s.peer_addr,
+            connected_since: s.connected_since,
+            active_commands: s.active_commands,
+        })
+        .collect();
+    Json(sessions)
+}
+
 // --- OpenAPI ---
 
 #[derive(OpenApi)]
@@ -385,6 +600,9 @@ async fn config_show(
         vtl_drives,
         vtl_media,
         vtl_snapshot,
+        vtl_changer,
+        vtl_drive_detail,
+        vtl_sessions,
         config_show,
     ),
     components(schemas(
@@ -396,6 +614,10 @@ async fn config_show(
         SlotResponse,
         MediaResponse,
         LibrarySnapshot,
+        ChangerDetailResponse,
+        ElementDetailResponse,
+        DriveDetailResponse,
+        SessionResponse,
         ConfigEntry,
     )),
     tags(
@@ -516,8 +738,11 @@ pub fn admin_router(state: AdminState) -> Router {
     let protected = Router::new()
         .route("/api/vtl/status", get(vtl_status))
         .route("/api/vtl/drives", get(vtl_drives))
+        .route("/api/vtl/drives/{id}", get(vtl_drive_detail))
         .route("/api/vtl/media", get(vtl_media))
         .route("/api/vtl/snapshot", get(vtl_snapshot))
+        .route("/api/vtl/changer", get(vtl_changer))
+        .route("/api/vtl/sessions", get(vtl_sessions))
         .route("/api/config", get(config_show))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

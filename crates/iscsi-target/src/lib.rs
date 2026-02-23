@@ -1,6 +1,9 @@
 pub mod login;
 pub mod pdu;
+pub mod session;
 pub mod target;
+
+pub use session::{SessionInfo, SessionRegistry};
 
 /// Result of executing a SCSI command.
 pub struct ScsiResult {

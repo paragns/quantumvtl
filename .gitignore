@@ -3,3 +3,5 @@
 crates/vtld/frontend/node_modules
 crates/vtld/frontend/dist
 *.redb
+.serena/
+crates/vtld/frontend/tsconfig.tsbuildinfo
