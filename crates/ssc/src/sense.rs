@@ -107,6 +107,17 @@ impl SenseBuilder {
         Self::new(0x0D, 0x00, 0x02).with_eom()
     }
 
+    /// MEDIUM ERROR — unrecoverable I/O error on the medium (sense key 0x03).
+    pub fn medium_error() -> Self {
+        // ASC/ASCQ 0x11/0x00 = Unrecovered read error (generic medium error)
+        Self::new(0x03, 0x11, 0x00)
+    }
+
+    /// MEDIUM ERROR — write fault (sense key 0x03, ASC/ASCQ 0x03/0x00).
+    pub fn write_fault() -> Self {
+        Self::new(0x03, 0x03, 0x00)
+    }
+
     // --- Builder methods ---
 
     pub fn with_information(mut self, info: u32) -> Self {

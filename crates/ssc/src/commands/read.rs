@@ -1,8 +1,9 @@
 //! READ(6) command handler.
 
-use crate::media::tape::{DriveMediaState, TapeRecord};
+use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
+use tracing::warn;
 
 /// Handle READ(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
 pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
@@ -37,13 +38,23 @@ pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResul
     }
 }
 
+/// Read record data from the store via its descriptor.
+fn read_record_data(ms: &mut DriveMediaState, desc: &RecordDescriptor) -> Result<Vec<u8>, ScsiResult> {
+    match desc {
+        RecordDescriptor::Data { offset, length } => {
+            ms.store.read_data(*offset, *length).map_err(|e| {
+                warn!(error = %e, "failed to read data from tape store");
+                SenseBuilder::medium_error().to_check_condition()
+            })
+        }
+        RecordDescriptor::Filemark => unreachable!(),
+    }
+}
+
 fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
     // Get the block size from the first block we'll read
     let first_pos = ms.position.block_number as usize;
-    let block_size = match &ms.current_partition().records[first_pos] {
-        TapeRecord::Data(d) => d.len(),
-        TapeRecord::Filemark => unreachable!(),
-    };
+    let block_size = ms.current_partition().records[first_pos].byte_len() as usize;
 
     let mut data = Vec::with_capacity(block_size * block_count as usize);
     let mut blocks_read: u32 = 0;
@@ -61,10 +72,11 @@ fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
             break;
         }
 
-        // Clone the data out, then update counters
-        let block_data = match &ms.current_partition().records[pos] {
-            TapeRecord::Data(d) => d.clone(),
-            TapeRecord::Filemark => unreachable!(),
+        // Clone the descriptor to avoid borrow conflict
+        let desc = ms.current_partition().records[pos].clone();
+        let block_data = match read_record_data(ms, &desc) {
+            Ok(d) => d,
+            Err(scsi_err) => return scsi_err,
         };
 
         let byte_len = block_data.len() as u64;
@@ -87,9 +99,11 @@ fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
 fn handle_read_variable(max_bytes: u32, ms: &mut DriveMediaState) -> ScsiResult {
     let pos = ms.position.block_number as usize;
 
-    let block_data = match &ms.current_partition().records[pos] {
-        TapeRecord::Data(d) => d.clone(),
-        TapeRecord::Filemark => unreachable!(),
+    // Clone the descriptor to avoid borrow conflict
+    let desc = ms.current_partition().records[pos].clone();
+    let block_data = match read_record_data(ms, &desc) {
+        Ok(d) => d,
+        Err(scsi_err) => return scsi_err,
     };
 
     let byte_len = block_data.len() as u64;

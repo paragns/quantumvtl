@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 bincode = "1"
 iscsi-target = { path = "../iscsi-target" }
+redb = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"

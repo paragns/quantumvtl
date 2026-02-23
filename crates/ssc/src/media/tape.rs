@@ -10,26 +10,27 @@ fn default_geometry() -> &'static TapeGeometry {
     LtoGeneration::Lto9.geometry()
 }
 
-/// A single record on tape — either a data block or a filemark.
+/// Lightweight record metadata — no data payload.
+/// Data blocks store their offset and length in the .data file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TapeRecord {
-    /// A data block with its raw content.
-    Data(Vec<u8>),
-    /// A filemark (tape mark / EOF marker).
+pub enum RecordDescriptor {
+    /// Data block: offset and length in the .data file.
+    Data { offset: u64, length: u32 },
+    /// Filemark (no data).
     Filemark,
 }
 
-impl TapeRecord {
+impl RecordDescriptor {
     /// Size of this record in bytes (0 for filemarks).
-    pub fn byte_len(&self) -> usize {
+    pub fn byte_len(&self) -> u32 {
         match self {
-            TapeRecord::Data(d) => d.len(),
-            TapeRecord::Filemark => 0,
+            RecordDescriptor::Data { length, .. } => *length,
+            RecordDescriptor::Filemark => 0,
         }
     }
 
     pub fn is_filemark(&self) -> bool {
-        matches!(self, TapeRecord::Filemark)
+        matches!(self, RecordDescriptor::Filemark)
     }
 }
 
@@ -37,7 +38,7 @@ impl TapeRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TapePartition {
     /// Sequential records in this partition.
-    pub records: Vec<TapeRecord>,
+    pub records: Vec<RecordDescriptor>,
     /// Fast lookup of filemark positions (indices into records vec).
     pub filemark_positions: Vec<u64>,
     /// Total uncompressed bytes written to this partition.
@@ -236,17 +237,19 @@ impl TapeMedia {
     }
 }
 
-/// Drive-internal state: media + position tracking.
+/// Drive-internal state: media + position tracking + persistence.
 pub struct DriveMediaState {
     pub media: TapeMedia,
     pub position: LogicalPosition,
+    pub store: super::store::TapeStore,
 }
 
 impl DriveMediaState {
-    pub fn new(media: TapeMedia) -> Self {
+    pub fn new(media: TapeMedia, store: super::store::TapeStore) -> Self {
         Self {
             media,
             position: LogicalPosition::default(),
+            store,
         }
     }
 

@@ -22,6 +22,7 @@ use tracing::{trace, warn};
 use commands::opcodes::*;
 use media::geometry::LtoGeneration;
 use media::position;
+use media::store::TapeStore;
 use media::tape::{DriveMediaState, TapeMedia};
 use mode_pages::ModePageRegistry;
 use log_pages::LogPageRegistry;
@@ -167,43 +168,97 @@ impl TapeDrive {
     }
 }
 
-impl TapeDrive {
-    /// Path to the persistence file for a given barcode.
-    fn tape_path(&self, barcode: &str) -> PathBuf {
-        self.data_dir.join(format!("{}.tape", barcode))
-    }
-}
-
 impl MediaLoadNotify for TapeDrive {
     fn media_loaded(&self, barcode: &str) {
         let mut st = self.state.lock().unwrap();
         trace!(barcode, "tape media loaded into drive");
 
-        let tape_path = self.tape_path(barcode);
-        let mut media = if tape_path.exists() {
-            match std::fs::read(&tape_path) {
-                Ok(data) => match bincode::deserialize::<TapeMedia>(&data) {
-                    Ok(mut m) => {
-                        m.fix_geometry();
-                        trace!(barcode, "restored tape media from disk");
-                        m
-                    }
-                    Err(e) => {
-                        warn!(barcode, error = %e, "failed to deserialize tape, creating blank");
-                        TapeMedia::new(barcode, self.generation)
-                    }
-                },
-                Err(e) => {
-                    warn!(barcode, error = %e, "failed to read tape file, creating blank");
-                    TapeMedia::new(barcode, self.generation)
+        // Open the per-media store (redb + data file)
+        let store = match TapeStore::open(&self.data_dir, barcode) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(barcode, error = %e, "failed to open tape store, drive stays empty");
+                return;
+            }
+        };
+
+        // Try to load existing media metadata from store
+        let mut media = match store.load_media_meta() {
+            Ok(Some(meta)) => {
+                trace!(barcode, "restoring tape media from redb store");
+                let generation = meta.generation;
+                let geometry = generation.geometry();
+                let mam = store.load_mam().unwrap_or_else(|e| {
+                    warn!(barcode, error = %e, "failed to load MAM, using default");
+                    media::mam::MamAttributes::new_for_cartridge(
+                        barcode,
+                        "IBM",
+                        &format!("{:0>10}", barcode),
+                    )
+                });
+
+                // Reconstruct partitions from stored records + stats
+                let mut partitions = Vec::with_capacity(meta.partition_count as usize);
+                for idx in 0..meta.partition_count {
+                    let records = store.load_partition_records(idx).unwrap_or_else(|e| {
+                        warn!(barcode, partition = idx, error = %e, "failed to load partition records");
+                        Vec::new()
+                    });
+                    let stats = store.load_partition_stats(idx).unwrap_or_else(|e| {
+                        warn!(barcode, partition = idx, error = %e, "failed to load partition stats");
+                        media::store::PartitionStats::default()
+                    });
+                    let mut partition = media::tape::TapePartition {
+                        records,
+                        filemark_positions: Vec::new(),
+                        bytes_written_native: stats.bytes_written_native,
+                        bytes_written_compressed: stats.bytes_written_compressed,
+                        bytes_read_native: stats.bytes_read_native,
+                    };
+                    partition.rebuild_filemark_index();
+                    partitions.push(partition);
+                }
+                if partitions.is_empty() {
+                    partitions.push(media::tape::TapePartition::new());
+                }
+
+                TapeMedia {
+                    barcode: meta.barcode,
+                    generation,
+                    geometry,
+                    partitions,
+                    write_protected: meta.write_protected,
+                    worm: meta.worm,
+                    mam,
+                    optimization_done: meta.optimization_done,
+                    compression_enabled: meta.compression_enabled,
+                    compression_ratio: meta.compression_ratio,
+                    total_loads: meta.total_loads,
+                    meters_processed: meta.meters_processed,
                 }
             }
-        } else {
-            TapeMedia::new(barcode, self.generation)
+            Ok(None) => {
+                // New tape — no existing metadata
+                trace!(barcode, "creating blank tape media");
+                TapeMedia::new(barcode, self.generation)
+            }
+            Err(e) => {
+                warn!(barcode, error = %e, "failed to load media meta, creating blank");
+                TapeMedia::new(barcode, self.generation)
+            }
         };
+
         media.record_load();
 
-        st.media_state = Some(DriveMediaState::new(media));
+        // Persist the initial metadata (including updated load count)
+        if let Err(e) = store.save_media_meta(&media) {
+            warn!(barcode, error = %e, "failed to persist initial media metadata");
+        }
+        if let Err(e) = store.save_mam(&media.mam) {
+            warn!(barcode, error = %e, "failed to persist MAM on load");
+        }
+
+        st.media_state = Some(DriveMediaState::new(media, store));
         st.activity = DriveActivity::Idle;
         st.backhitch_count = 0;
     }
@@ -212,28 +267,24 @@ impl MediaLoadNotify for TapeDrive {
         let mut st = self.state.lock().unwrap();
         trace!("tape media unloaded from drive");
 
-        // Persist tape data before dropping
+        // Flush final metadata to store before dropping
         if let Some(ref ms) = st.media_state {
-            let tape_path = self.tape_path(&ms.media.barcode);
-            let tmp_path = tape_path.with_extension("tape.tmp");
-            match bincode::serialize(&ms.media) {
-                Ok(data) => {
-                    if let Err(e) = std::fs::create_dir_all(&self.data_dir) {
-                        warn!(error = %e, "failed to create data dir for tape persistence");
-                    } else if let Err(e) = std::fs::write(&tmp_path, &data) {
-                        warn!(barcode = %ms.media.barcode, error = %e, "failed to write tape file");
-                    } else if let Err(e) = std::fs::rename(&tmp_path, &tape_path) {
-                        warn!(barcode = %ms.media.barcode, error = %e, "failed to rename tape file");
-                    } else {
-                        trace!(barcode = %ms.media.barcode, bytes = data.len(), "persisted tape media to disk");
-                    }
-                }
-                Err(e) => {
-                    warn!(barcode = %ms.media.barcode, error = %e, "failed to serialize tape media");
+            let barcode = &ms.media.barcode;
+            if let Err(e) = ms.store.save_media_meta(&ms.media) {
+                warn!(barcode, error = %e, "failed to persist media metadata on unload");
+            }
+            for (idx, partition) in ms.media.partitions.iter().enumerate() {
+                if let Err(e) = ms.store.save_partition_stats(idx as u32, partition) {
+                    warn!(barcode, partition = idx, error = %e, "failed to persist partition stats on unload");
                 }
             }
+            if let Err(e) = ms.store.save_mam(&ms.media.mam) {
+                warn!(barcode, error = %e, "failed to persist MAM on unload");
+            }
+            trace!(barcode, "flushed tape metadata to redb store");
         }
 
+        // Drop the DriveMediaState — redb + file handles close automatically
         st.media_state = None;
         st.activity = DriveActivity::Empty;
     }
