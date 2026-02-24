@@ -4,7 +4,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Utc;
@@ -1227,8 +1227,18 @@ async fn static_handler(uri: Uri) -> Response {
         }
     }
 
+    // SPA fallback: serve index.html with no-cache so the browser always gets
+    // the latest entry point (JS/CSS assets have content hashes and are safe to cache).
     match FrontendAssets::get("index.html") {
-        Some(file) => Html(file.data).into_response(),
+        Some(file) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            file.data,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "index.html not found").into_response(),
     }
 }

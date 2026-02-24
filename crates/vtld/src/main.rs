@@ -87,8 +87,8 @@ async fn main() -> anyhow::Result<()> {
 
     // Create tape drives and collect notification handles for the changer
     let data_dir = std::path::PathBuf::from(&config.library.data_dir);
-    // Simulation clock: default instant (no delays) — adjustable via API
-    let simulation_clock = Arc::new(SimulationClock::instant());
+    // Simulation clock: default realistic (1:1 timing) — adjustable via API
+    let simulation_clock = Arc::new(SimulationClock::realistic());
 
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
