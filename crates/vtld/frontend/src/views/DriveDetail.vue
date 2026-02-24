@@ -67,7 +67,7 @@ function formatRate(bytesPerSec: number | null): string {
       <section class="card">
         <h3>Media</h3>
         <div v-if="drive.loaded" class="stats">
-          <div class="stat"><span class="stat-value">{{ drive.barcode ?? 'N/A' }}</span><span class="stat-label">Barcode</span></div>
+          <div class="stat"><router-link v-if="drive.barcode" :to="`/media/${drive.barcode}`" class="stat-value barcode-link">{{ drive.barcode }}</router-link><span v-else class="stat-value">N/A</span><span class="stat-label">Barcode</span></div>
           <div class="stat"><span class="stat-value">{{ drive.partition }}</span><span class="stat-label">Partition</span></div>
           <div class="stat"><span class="stat-value">{{ drive.block_number }}</span><span class="stat-label">Block</span></div>
           <div class="stat"><span class="stat-value">{{ drive.file_number }}</span><span class="stat-label">Filemark</span></div>
@@ -169,6 +169,8 @@ function formatRate(bytesPerSec: number | null): string {
 .stat { display: flex; flex-direction: column; }
 .stat-value { font-size: 1.15rem; font-weight: 700; color: #1a1a2e; }
 .stat-value.flag { color: #e67e22; }
+.barcode-link { text-decoration: none; font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; }
+.barcode-link:hover { text-decoration: underline; color: #2980b9; }
 .stat-label { font-size: 0.78rem; color: #888; }
 
 .progress-wrap { margin-top: 0.75rem; }
