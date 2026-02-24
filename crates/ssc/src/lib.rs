@@ -25,7 +25,7 @@ use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
 use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
-use media::tape::{DriveMediaState, TapeMedia};
+use media::tape::{DriveMediaState, RecordDescriptor, TapeMedia};
 pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
 use mode_pages::ModePageRegistry;
 use snapshot::{DriveActivity, DriveSnapshot};
@@ -210,6 +210,62 @@ impl TapeDrive {
             }
             None => DriveSnapshot::empty(&self.serial, self.generation),
         }
+    }
+
+    /// Return a live `MediaDetail` from the in-memory state if media is loaded.
+    pub fn media_detail(&self) -> Option<MediaDetail> {
+        let st = self.state.lock().unwrap();
+        let ms = st.media_state.as_ref()?;
+        let m = &ms.media;
+
+        let partitions: Vec<PartitionDetail> = m
+            .partitions
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| {
+                let mut filemark_positions = Vec::new();
+                let mut data_record_sizes = Vec::new();
+                for (i, rec) in p.records.iter().enumerate() {
+                    match rec {
+                        RecordDescriptor::Filemark => filemark_positions.push(i as u64),
+                        RecordDescriptor::Data { length, .. } => data_record_sizes.push(*length),
+                    }
+                }
+                PartitionDetail {
+                    index: idx as u8,
+                    record_count: p.records.len() as u64,
+                    filemark_count: filemark_positions.len() as u64,
+                    filemark_positions,
+                    data_record_sizes,
+                    bytes_written_native: p.bytes_written_native,
+                    bytes_written_compressed: p.bytes_written_compressed,
+                    bytes_read_native: p.bytes_read_native,
+                }
+            })
+            .collect();
+
+        let total_records = partitions.iter().map(|p| p.record_count).sum();
+        let total_filemarks = partitions.iter().map(|p| p.filemark_count).sum();
+
+        Some(MediaDetail {
+            barcode: m.barcode.clone(),
+            generation: m.generation,
+            write_protected: m.write_protected,
+            worm: m.worm,
+            partition_count: partitions.len() as u8,
+            total_records,
+            total_filemarks,
+            native_bytes_written: m.total_native_bytes_written(),
+            compressed_bytes_written: m.total_compressed_bytes_written(),
+            native_capacity_bytes: m.native_capacity_bytes(),
+            capacity_used_pct: m.capacity_used_fraction() * 100.0,
+            approximate_remaining_mb: m.approximate_remaining_mb(),
+            compression_enabled: m.compression_enabled,
+            compression_ratio: m.compression_ratio,
+            total_loads: m.total_loads,
+            optimization_done: m.optimization_done,
+            partitions,
+        })
     }
 }
 

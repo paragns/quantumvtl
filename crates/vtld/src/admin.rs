@@ -487,49 +487,53 @@ async fn vtl_media_detail(
 
     let medium_type = format!("{:?}", element.medium_type);
 
-    // Read tape detail from the .redb store
-    let detail = read_media_detail(&state.data_dir, &barcode);
+    // If media is loaded in a drive, read live in-memory state (partition stats
+    // are only flushed to the .redb store on unload, so the on-disk data is stale
+    // while the drive is actively reading/writing).
+    let detail = in_drive
+        .and_then(|idx| state.drives.get(idx))
+        .and_then(|drive| drive.media_detail())
+        .or_else(|| read_media_detail(&state.data_dir, &barcode));
+
+    let to_partition_responses = |partitions: Vec<ssc::PartitionDetail>| -> Vec<PartitionDetailResponse> {
+        partitions
+            .into_iter()
+            .map(|p| PartitionDetailResponse {
+                index: p.index,
+                record_count: p.record_count,
+                filemark_count: p.filemark_count,
+                filemark_positions: p.filemark_positions,
+                bytes_written_native: p.bytes_written_native,
+                bytes_written_compressed: p.bytes_written_compressed,
+                bytes_read_native: p.bytes_read_native,
+            })
+            .collect()
+    };
 
     match detail {
-        Some(d) => {
-            let partitions = d
-                .partitions
-                .into_iter()
-                .map(|p| PartitionDetailResponse {
-                    index: p.index,
-                    record_count: p.record_count,
-                    filemark_count: p.filemark_count,
-                    filemark_positions: p.filemark_positions,
-                    bytes_written_native: p.bytes_written_native,
-                    bytes_written_compressed: p.bytes_written_compressed,
-                    bytes_read_native: p.bytes_read_native,
-                })
-                .collect();
-
-            Ok(Json(MediaDetailResponse {
-                barcode: d.barcode,
-                generation: format!("{:?}", d.generation),
-                write_protected: d.write_protected,
-                worm: d.worm,
-                medium_type,
-                location,
-                location_type,
-                in_drive,
-                partition_count: d.partition_count,
-                total_records: d.total_records,
-                total_filemarks: d.total_filemarks,
-                native_bytes_written: d.native_bytes_written,
-                compressed_bytes_written: d.compressed_bytes_written,
-                native_capacity_bytes: d.native_capacity_bytes,
-                capacity_used_pct: d.capacity_used_pct,
-                approximate_remaining_mb: d.approximate_remaining_mb,
-                compression_enabled: d.compression_enabled,
-                compression_ratio: d.compression_ratio,
-                total_loads: d.total_loads,
-                optimization_done: d.optimization_done,
-                partitions,
-            }))
-        }
+        Some(d) => Ok(Json(MediaDetailResponse {
+            barcode: d.barcode,
+            generation: format!("{:?}", d.generation),
+            write_protected: d.write_protected,
+            worm: d.worm,
+            medium_type,
+            location,
+            location_type,
+            in_drive,
+            partition_count: d.partition_count,
+            total_records: d.total_records,
+            total_filemarks: d.total_filemarks,
+            native_bytes_written: d.native_bytes_written,
+            compressed_bytes_written: d.compressed_bytes_written,
+            native_capacity_bytes: d.native_capacity_bytes,
+            capacity_used_pct: d.capacity_used_pct,
+            approximate_remaining_mb: d.approximate_remaining_mb,
+            compression_enabled: d.compression_enabled,
+            compression_ratio: d.compression_ratio,
+            total_loads: d.total_loads,
+            optimization_done: d.optimization_done,
+            partitions: to_partition_responses(d.partitions),
+        })),
         None => {
             // Media is in the changer but has no .redb file yet (never loaded)
             Ok(Json(MediaDetailResponse {
