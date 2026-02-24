@@ -22,6 +22,8 @@ const entries = ref<ScsiLogSummary[]>([])
 const error = ref('')
 let ws: WebSocket | null = null
 let pollTimer: number | null = null
+let destroyed = false
+let fetching = false
 
 async function loadData() {
   const resp = await fetchScsiLog(deviceType.value, deviceId.value, 20)
@@ -33,13 +35,22 @@ async function loadData() {
   }
 }
 
+function guardedLoad() {
+  if (fetching) return
+  fetching = true
+  loadData().finally(() => { fetching = false })
+}
+
 function connectWebSocket() {
+  if (destroyed) return
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   ws = new WebSocket(`${proto}//${location.host}/api/ws`)
-  ws.onmessage = () => { loadData() }
+  ws.onmessage = () => { guardedLoad() }
   ws.onclose = () => {
     ws = null
-    pollTimer = window.setTimeout(() => { connectWebSocket() }, 5000)
+    if (!destroyed) {
+      pollTimer = window.setTimeout(() => { connectWebSocket() }, 5000)
+    }
   }
 }
 
@@ -70,13 +81,14 @@ function formatOpcode(op: number): string {
 }
 
 onMounted(() => {
-  loadData()
+  guardedLoad()
   connectWebSocket()
 })
 
 onUnmounted(() => {
-  ws?.close()
+  destroyed = true
   if (pollTimer) clearTimeout(pollTimer)
+  ws?.close()
 })
 </script>
 

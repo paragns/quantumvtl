@@ -6,7 +6,7 @@ import ScsiLogLine from '../components/ScsiLogLine.vue'
 import type { DriveSummary } from '../types'
 
 const drives = ref<DriveSummary[]>([])
-const driveLogs = ref<Map<number, ScsiLogSummary[]>>(new Map())
+const driveLogs = ref<Record<number, ScsiLogSummary[]>>({})
 const error = ref('')
 
 async function fetchData() {
@@ -21,10 +21,14 @@ async function fetchData() {
   } catch {
     error.value = 'Failed to fetch drive data'
   }
-  for (const d of drives.value) {
-    const dl = await fetchScsiLog('drive', d.id, 4)
-    if (dl) driveLogs.value.set(d.id, dl.entries)
+  const logs = await Promise.all(
+    drives.value.map(d => fetchScsiLog('drive', d.id, 4).then(r => [d.id, r] as const))
+  )
+  const updated: Record<number, ScsiLogSummary[]> = {}
+  for (const [id, r] of logs) {
+    if (r) updated[id] = r.entries
   }
+  driveLogs.value = updated
 }
 
 useWebSocket(fetchData)
@@ -60,9 +64,9 @@ useWebSocket(fetchData)
       <h3>SCSI Activity</h3>
       <div v-for="d in drives" :key="d.id" class="drive-log-section">
         <h4><router-link :to="`/device/drive/${d.id}`" class="card-title-link">Drive {{ d.id }}</router-link></h4>
-        <div v-if="(driveLogs.get(d.id) ?? []).length > 0">
+        <div v-if="(driveLogs[d.id] ?? []).length > 0">
           <ScsiLogLine
-            v-for="e in driveLogs.get(d.id)"
+            v-for="e in driveLogs[d.id]"
             :key="e.seq"
             :entry="e"
             device-type="drive"
