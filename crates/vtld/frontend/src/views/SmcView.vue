@@ -128,7 +128,7 @@ useWebSocket(fetchData)
                 <td class="mono">0x{{ e.address.toString(16).padStart(4, '0').toUpperCase() }}</td>
                 <td>{{ e.element_type }}</td>
                 <td>{{ e.full ? 'Yes' : '' }}</td>
-                <td class="mono">{{ e.barcode ?? '' }}</td>
+                <td class="mono"><router-link v-if="e.barcode" :to="`/media/${e.barcode}`" class="barcode-link">{{ e.barcode }}</router-link></td>
                 <td class="mono">{{ e.source_element ? '0x' + e.source_element.toString(16).padStart(4, '0').toUpperCase() : '' }}</td>
                 <td>{{ e.access ? 'Yes' : '' }}</td>
                 <td>{{ e.except ? 'Yes' : '' }}</td>
@@ -175,4 +175,6 @@ td { padding: 0.35rem 0.6rem; border-bottom: 1px solid #f0f0f0; }
 .card-title-link { color: #1a1a2e; text-decoration: none; }
 .card-title-link:hover { text-decoration: underline; }
 .no-activity { color: #bbb; font-style: italic; font-size: 0.85rem; }
+.barcode-link { color: #1a1a2e; text-decoration: none; font-weight: 600; }
+.barcode-link:hover { text-decoration: underline; color: #2980b9; }
 </style>

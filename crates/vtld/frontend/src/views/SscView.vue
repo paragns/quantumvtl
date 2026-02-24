@@ -52,7 +52,7 @@ useWebSocket(fetchData)
         </div>
         <div class="drive-serial">{{ d.serial }}</div>
         <div v-if="d.status === 'loaded'" class="drive-media">
-          <span class="drive-barcode">{{ d.barcode }}</span>
+          <router-link :to="`/media/${d.barcode}`" class="drive-barcode" @click.stop>{{ d.barcode }}</router-link>
           <span class="drive-pos">pos {{ d.position }} / {{ d.record_count }} rec</span>
         </div>
         <div v-else class="drive-empty">Empty</div>
@@ -104,7 +104,8 @@ useWebSocket(fetchData)
 .drive-dot.empty { background: #bbb; }
 .drive-serial { font-size: 0.78rem; color: #888; margin-bottom: 0.3rem; }
 .drive-media { font-size: 0.85rem; }
-.drive-barcode { font-weight: 600; display: block; color: #1a1a2e; }
+.drive-barcode { font-weight: 600; display: block; color: #1a1a2e; text-decoration: none; }
+.drive-barcode:hover { text-decoration: underline; color: #2980b9; }
 .drive-pos { font-size: 0.75rem; color: #888; }
 .drive-empty { font-size: 0.85rem; color: #bbb; font-style: italic; }
 

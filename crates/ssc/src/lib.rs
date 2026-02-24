@@ -24,6 +24,7 @@ use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
 use media::tape::{DriveMediaState, TapeMedia};
+pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
 use mode_pages::ModePageRegistry;
 use log_pages::LogPageRegistry;
 use snapshot::{DriveActivity, DriveSnapshot};

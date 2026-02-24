@@ -27,6 +27,50 @@ export async function checkTokenValid(): Promise<boolean> {
   }
 }
 
+// --- Media Detail Types ---
+
+export interface PartitionDetail {
+  index: number
+  record_count: number
+  filemark_count: number
+  filemark_positions: number[]
+  bytes_written_native: number
+  bytes_written_compressed: number
+  bytes_read_native: number
+}
+
+export interface MediaDetailResponse {
+  barcode: string
+  generation: string
+  write_protected: boolean
+  worm: boolean
+  medium_type: string
+  location: string
+  location_type: string
+  in_drive: number | null
+  partition_count: number
+  total_records: number
+  total_filemarks: number
+  native_bytes_written: number
+  compressed_bytes_written: number
+  native_capacity_bytes: number
+  capacity_used_pct: number
+  approximate_remaining_mb: number
+  compression_enabled: boolean
+  compression_ratio: number
+  total_loads: number
+  optimization_done: boolean
+  partitions: PartitionDetail[]
+}
+
+export async function fetchMediaDetail(barcode: string): Promise<MediaDetailResponse | null> {
+  try {
+    const resp = await apiFetch(`/api/vtl/media/${encodeURIComponent(barcode)}`)
+    if (resp.ok) return await resp.json()
+  } catch { /* ignore */ }
+  return null
+}
+
 // --- SCSI Log Types ---
 
 export interface ScsiLogSummary {

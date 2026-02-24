@@ -6,6 +6,7 @@ import SscView from './views/SscView.vue'
 import DriveDetail from './views/DriveDetail.vue'
 import InitiatorsView from './views/InitiatorsView.vue'
 import ApiDocs from './views/ApiDocs.vue'
+import MediaDetail from './views/MediaDetail.vue'
 import DeviceDetail from './views/DeviceDetail.vue'
 import CommandDetail from './views/CommandDetail.vue'
 import { checkTokenValid } from './api'
@@ -20,6 +21,7 @@ const routes = [
       { path: 'smc', name: 'smc', component: SmcView },
       { path: 'ssc', name: 'ssc', component: SscView },
       { path: 'ssc/drive/:id', name: 'drive-detail', component: DriveDetail, props: true },
+      { path: 'media/:barcode', name: 'media-detail', component: MediaDetail, props: true },
       { path: 'initiators', name: 'initiators', component: InitiatorsView },
     ],
   },

@@ -21,6 +21,7 @@ use iscsi_target::cdb_decode::{decode_cdb, decode_response, CdbBreakdown, Respon
 use iscsi_target::scsi_log::{DeviceType, ScsiCommandLog, scsi_status_name};
 use smc::{ElementType, MediaChanger};
 use ssc::TapeDrive;
+use ssc::read_media_detail;
 
 use crate::config::UserConfig;
 use crate::error::{AdminError, Error};
@@ -38,6 +39,7 @@ pub struct AdminState {
     pub session_registry: Arc<SessionRegistry>,
     pub changer_log: Arc<ScsiCommandLog>,
     pub drive_logs: Vec<Arc<ScsiCommandLog>>,
+    pub data_dir: std::path::PathBuf,
 }
 
 #[derive(Embed)]
@@ -104,6 +106,42 @@ struct MediaResponse {
     barcode: String,
     location: String,
     location_address: u16,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct PartitionDetailResponse {
+    index: u8,
+    record_count: u64,
+    filemark_count: u64,
+    filemark_positions: Vec<u64>,
+    bytes_written_native: u64,
+    bytes_written_compressed: u64,
+    bytes_read_native: u64,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct MediaDetailResponse {
+    barcode: String,
+    generation: String,
+    write_protected: bool,
+    worm: bool,
+    medium_type: String,
+    location: String,
+    location_type: String,
+    in_drive: Option<usize>,
+    partition_count: u8,
+    total_records: u64,
+    total_filemarks: u64,
+    native_bytes_written: u64,
+    compressed_bytes_written: u64,
+    native_capacity_bytes: u64,
+    capacity_used_pct: f64,
+    approximate_remaining_mb: u64,
+    compression_enabled: bool,
+    compression_ratio: f64,
+    total_loads: u32,
+    optimization_done: bool,
+    partitions: Vec<PartitionDetailResponse>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -389,6 +427,136 @@ async fn vtl_media(State(state): State<AdminState>) -> Json<Vec<MediaResponse>> 
         })
         .collect();
     Json(media)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/media/{barcode}",
+    tag = "VTL",
+    params(
+        ("barcode" = String, Path, description = "Media barcode")
+    ),
+    responses(
+        (status = 200, description = "Media detail", body = MediaDetailResponse),
+        (status = 404, description = "Media not found")
+    )
+)]
+async fn vtl_media_detail(
+    State(state): State<AdminState>,
+    axum::extract::Path(barcode): axum::extract::Path<String>,
+) -> Result<Json<MediaDetailResponse>, StatusCode> {
+    let snap = state.changer.snapshot();
+
+    // Find this barcode in the changer elements
+    let element = snap
+        .elements
+        .iter()
+        .find(|e| e.barcode.as_deref() == Some(&barcode))
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let (location, location_type, in_drive) = match element.element_type {
+        ElementType::DataTransfer => {
+            // Find which drive index this address corresponds to
+            let drive_idx = snap
+                .elements
+                .iter()
+                .filter(|e| e.element_type == ElementType::DataTransfer)
+                .position(|e| e.address == element.address);
+            (
+                format!("Drive {}", drive_idx.unwrap_or(0)),
+                "data_transfer".to_string(),
+                drive_idx,
+            )
+        }
+        ElementType::Storage => (
+            format!("Slot 0x{:04X}", element.address),
+            "storage".to_string(),
+            None,
+        ),
+        ElementType::ImportExport => (
+            format!("I/E Port 0x{:04X}", element.address),
+            "import_export".to_string(),
+            None,
+        ),
+        ElementType::Transport => (
+            format!("Transport 0x{:04X}", element.address),
+            "transport".to_string(),
+            None,
+        ),
+    };
+
+    let medium_type = format!("{:?}", element.medium_type);
+
+    // Read tape detail from the .redb store
+    let detail = read_media_detail(&state.data_dir, &barcode);
+
+    match detail {
+        Some(d) => {
+            let partitions = d
+                .partitions
+                .into_iter()
+                .map(|p| PartitionDetailResponse {
+                    index: p.index,
+                    record_count: p.record_count,
+                    filemark_count: p.filemark_count,
+                    filemark_positions: p.filemark_positions,
+                    bytes_written_native: p.bytes_written_native,
+                    bytes_written_compressed: p.bytes_written_compressed,
+                    bytes_read_native: p.bytes_read_native,
+                })
+                .collect();
+
+            Ok(Json(MediaDetailResponse {
+                barcode: d.barcode,
+                generation: format!("{:?}", d.generation),
+                write_protected: d.write_protected,
+                worm: d.worm,
+                medium_type,
+                location,
+                location_type,
+                in_drive,
+                partition_count: d.partition_count,
+                total_records: d.total_records,
+                total_filemarks: d.total_filemarks,
+                native_bytes_written: d.native_bytes_written,
+                compressed_bytes_written: d.compressed_bytes_written,
+                native_capacity_bytes: d.native_capacity_bytes,
+                capacity_used_pct: d.capacity_used_pct,
+                approximate_remaining_mb: d.approximate_remaining_mb,
+                compression_enabled: d.compression_enabled,
+                compression_ratio: d.compression_ratio,
+                total_loads: d.total_loads,
+                optimization_done: d.optimization_done,
+                partitions,
+            }))
+        }
+        None => {
+            // Media is in the changer but has no .redb file yet (never loaded)
+            Ok(Json(MediaDetailResponse {
+                barcode: barcode.clone(),
+                generation: "Unknown".to_string(),
+                write_protected: false,
+                worm: false,
+                medium_type,
+                location,
+                location_type,
+                in_drive,
+                partition_count: 0,
+                total_records: 0,
+                total_filemarks: 0,
+                native_bytes_written: 0,
+                compressed_bytes_written: 0,
+                native_capacity_bytes: 0,
+                capacity_used_pct: 0.0,
+                approximate_remaining_mb: 0,
+                compression_enabled: false,
+                compression_ratio: 0.0,
+                total_loads: 0,
+                optimization_done: false,
+                partitions: Vec::new(),
+            }))
+        }
+    }
 }
 
 #[utoipa::path(
@@ -932,6 +1100,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/vtl/drives", get(vtl_drives))
         .route("/api/vtl/drives/{id}", get(vtl_drive_detail))
         .route("/api/vtl/media", get(vtl_media))
+        .route("/api/vtl/media/{barcode}", get(vtl_media_detail))
         .route("/api/vtl/snapshot", get(vtl_snapshot))
         .route("/api/vtl/changer", get(vtl_changer))
         .route("/api/vtl/sessions", get(vtl_sessions))

@@ -136,6 +136,137 @@ pub struct TapeMediaSnapshot {
     pub optimization_done: bool,
 }
 
+/// Detailed per-partition information for the media detail API.
+#[derive(Debug, Clone, Serialize)]
+pub struct PartitionDetail {
+    pub index: u8,
+    pub record_count: u64,
+    pub filemark_count: u64,
+    pub filemark_positions: Vec<u64>,
+    pub data_record_sizes: Vec<u32>,
+    pub bytes_written_native: u64,
+    pub bytes_written_compressed: u64,
+    pub bytes_read_native: u64,
+}
+
+/// Full media detail — everything known about a cartridge from its .redb store.
+#[derive(Debug, Clone, Serialize)]
+pub struct MediaDetail {
+    pub barcode: String,
+    pub generation: LtoGeneration,
+    pub write_protected: bool,
+    pub worm: bool,
+    pub partition_count: u8,
+    pub total_records: u64,
+    pub total_filemarks: u64,
+    pub native_bytes_written: u64,
+    pub compressed_bytes_written: u64,
+    pub native_capacity_bytes: u64,
+    pub capacity_used_pct: f64,
+    pub approximate_remaining_mb: u64,
+    pub compression_enabled: bool,
+    pub compression_ratio: f64,
+    pub total_loads: u32,
+    pub optimization_done: bool,
+    pub partitions: Vec<PartitionDetail>,
+}
+
+/// Read detailed media information directly from the .redb store file.
+/// Does not require the media to be loaded in a drive.
+pub fn read_media_detail(data_dir: &std::path::Path, barcode: &str) -> Option<MediaDetail> {
+    let store = super::store::TapeStore::open(data_dir, barcode).ok()?;
+    let meta = store.load_media_meta().ok()??;
+
+    let generation = meta.generation;
+    let geometry = generation.geometry();
+
+    let mut partitions = Vec::with_capacity(meta.partition_count as usize);
+    let mut total_records: u64 = 0;
+    let mut total_filemarks: u64 = 0;
+    let mut native_bytes_written: u64 = 0;
+    let mut compressed_bytes_written: u64 = 0;
+
+    for idx in 0..meta.partition_count {
+        let records = store.load_partition_records(idx).unwrap_or_default();
+        let stats = store
+            .load_partition_stats(idx)
+            .unwrap_or_default();
+
+        let mut filemark_positions = Vec::new();
+        let mut data_record_sizes = Vec::new();
+        for (i, rec) in records.iter().enumerate() {
+            match rec {
+                RecordDescriptor::Filemark => {
+                    filemark_positions.push(i as u64);
+                }
+                RecordDescriptor::Data { length, .. } => {
+                    data_record_sizes.push(*length);
+                }
+            }
+        }
+
+        let record_count = records.len() as u64;
+        let filemark_count = filemark_positions.len() as u64;
+        total_records += record_count;
+        total_filemarks += filemark_count;
+        native_bytes_written += stats.bytes_written_native;
+        compressed_bytes_written += stats.bytes_written_compressed;
+
+        partitions.push(PartitionDetail {
+            index: idx as u8,
+            record_count,
+            filemark_count,
+            filemark_positions,
+            data_record_sizes,
+            bytes_written_native: stats.bytes_written_native,
+            bytes_written_compressed: stats.bytes_written_compressed,
+            bytes_read_native: stats.bytes_read_native,
+        });
+    }
+
+    // If no partitions were stored, there's at least one empty partition
+    if partitions.is_empty() {
+        partitions.push(PartitionDetail {
+            index: 0,
+            record_count: 0,
+            filemark_count: 0,
+            filemark_positions: Vec::new(),
+            data_record_sizes: Vec::new(),
+            bytes_written_native: 0,
+            bytes_written_compressed: 0,
+            bytes_read_native: 0,
+        });
+    }
+
+    let native_capacity = geometry.native_capacity_bytes;
+    let used_pct = if native_capacity > 0 {
+        (native_bytes_written as f64 / native_capacity as f64 * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+    let remaining_mb = native_capacity.saturating_sub(native_bytes_written) / 1_000_000;
+
+    Some(MediaDetail {
+        barcode: meta.barcode,
+        generation,
+        write_protected: meta.write_protected,
+        worm: meta.worm,
+        partition_count: partitions.len() as u8,
+        total_records,
+        total_filemarks,
+        native_bytes_written,
+        compressed_bytes_written,
+        native_capacity_bytes: native_capacity,
+        capacity_used_pct: used_pct,
+        approximate_remaining_mb: remaining_mb,
+        compression_enabled: meta.compression_enabled,
+        compression_ratio: meta.compression_ratio,
+        total_loads: meta.total_loads,
+        optimization_done: meta.optimization_done,
+        partitions,
+    })
+}
+
 impl TapeMedia {
     /// Create a new blank tape for the given generation.
     pub fn new(barcode: &str, generation: LtoGeneration) -> Self {

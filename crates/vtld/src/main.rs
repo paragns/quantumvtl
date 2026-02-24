@@ -133,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         session_registry: session_registry.clone(),
         changer_log,
         drive_logs,
+        data_dir: data_dir.clone(),
     };
 
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
