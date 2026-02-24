@@ -38,22 +38,23 @@ impl Default for PhysicalPosition {
     }
 }
 
-/// Map a logical position to a plausible physical position.
+/// Map a byte-level tape position to a plausible physical position.
 ///
-/// This does not need to be bit-accurate to real hardware — it just needs to
-/// produce realistic wrap numbers and positions so that wrap transitions,
-/// backhitch estimation, and dashboard display look reasonable.
+/// `bytes_before_head` is the total native bytes before the current head
+/// position in the active partition.  `native_capacity_bytes` is the full
+/// cartridge capacity.  Together they give a fraction of the tape consumed
+/// which is mapped through the serpentine wrap geometry.
 pub fn logical_to_physical(
-    block_number: u64,
-    total_blocks: u64,
+    bytes_before_head: u64,
+    native_capacity_bytes: u64,
     geometry: &TapeGeometry,
 ) -> PhysicalPosition {
-    if total_blocks == 0 || block_number == 0 {
+    if native_capacity_bytes == 0 || bytes_before_head == 0 {
         return PhysicalPosition::default();
     }
 
-    // Fraction of tape used
-    let frac = (block_number as f64) / (total_blocks.max(1) as f64);
+    // Fraction of tape capacity before the head
+    let frac = (bytes_before_head as f64 / native_capacity_bytes as f64).min(1.0);
     let total_wraps = geometry.num_wraps as f64;
 
     // Linear mapping: fraction of capacity → fraction of wraps
