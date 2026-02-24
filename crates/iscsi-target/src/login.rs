@@ -34,6 +34,10 @@ pub struct LoginNegotiator {
     pub target_name: String,
     pub tsih: u16,
     pub initiator_name: Option<String>,
+    /// Negotiated InitialR2T (false = unsolicited data allowed).
+    pub initial_r2t: bool,
+    /// Negotiated FirstBurstLength in bytes.
+    pub first_burst_length: usize,
     next_tsih: u16,
 }
 
@@ -43,6 +47,8 @@ impl LoginNegotiator {
             target_name,
             tsih: 0,
             initiator_name: None,
+            initial_r2t: true,
+            first_burst_length: 65536,
             next_tsih: 1,
         }
     }
@@ -155,14 +161,46 @@ impl LoginNegotiator {
         stat_sn: u32,
         exp_cmd_sn: u32,
     ) -> Pdu {
+        let kv = parse_kv_pairs(&req.data);
+
+        // Parse initiator proposals for InitialR2T and FirstBurstLength.
+        // InitialR2T is boolean-OR: result is No only if both sides say No.
+        // We (target) accept No, so the result equals the initiator's proposal.
+        let mut initiator_initial_r2t = true;
+        let mut initiator_first_burst_length: usize = 65536;
+        for (k, v) in &kv {
+            match k.as_str() {
+                "InitialR2T" => {
+                    initiator_initial_r2t = v != "No";
+                }
+                "FirstBurstLength" => {
+                    if let Ok(val) = v.parse::<usize>() {
+                        initiator_first_burst_length = val;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Negotiate: we accept the initiator's InitialR2T preference.
+        let negotiated_initial_r2t = initiator_initial_r2t;
+        // FirstBurstLength: use the minimum of both sides' values (ours = 262144).
+        let negotiated_first_burst = initiator_first_burst_length.min(262144);
+
+        self.initial_r2t = negotiated_initial_r2t;
+        self.first_burst_length = negotiated_first_burst;
+
+        let initial_r2t_str = if negotiated_initial_r2t { "Yes" } else { "No" };
+        let first_burst_str = negotiated_first_burst.to_string();
+
         let response_pairs: Vec<(&str, &str)> = vec![
             ("HeaderDigest", "None"),
             ("DataDigest", "None"),
             ("MaxRecvDataSegmentLength", "262144"),
-            ("InitialR2T", "Yes"),
+            ("InitialR2T", initial_r2t_str),
             ("ImmediateData", "Yes"),
             ("MaxBurstLength", "262144"),
-            ("FirstBurstLength", "65536"),
+            ("FirstBurstLength", &first_burst_str),
             ("MaxConnections", "1"),
             ("MaxOutstandingR2T", "1"),
             ("ErrorRecoveryLevel", "0"),

@@ -187,10 +187,41 @@ async fn handle_connection(
                     "SCSI command"
                 );
 
-                // Collect write data via R2T/Data-Out if this is a write command.
+                // Collect write data via unsolicited Data-Out and/or R2T.
                 let write_data = if write_bit && edtl > 0 {
                     // Start with any immediate data from the command PDU.
                     let mut data = req.data.clone();
+
+                    // If InitialR2T=No was negotiated, the initiator may send
+                    // unsolicited Data-Out PDUs (TTT=0xFFFFFFFF) up to
+                    // FirstBurstLength bytes before we send any R2T.
+                    if !login.initial_r2t && (data.len() as u32) < edtl {
+                        let unsolicited_limit = login.first_burst_length;
+                        loop {
+                            let data_pdu = Pdu::read_from(&mut reader).await?;
+                            if data_pdu.opcode() != pdu::OPCODE_DATA_OUT {
+                                warn!(opcode = data_pdu.opcode(), "expected unsolicited Data-Out PDU");
+                                break;
+                            }
+
+                            let buf_offset = data_pdu.buffer_offset() as usize;
+                            let chunk = &data_pdu.data;
+
+                            if buf_offset + chunk.len() > data.len() {
+                                data.resize(buf_offset + chunk.len(), 0);
+                            }
+                            data[buf_offset..buf_offset + chunk.len()].copy_from_slice(chunk);
+
+                            // F bit = final Data-Out for this unsolicited sequence.
+                            if data_pdu.flags() & 0x80 != 0 {
+                                break;
+                            }
+                            // Safety: stop if we've received up to the burst limit.
+                            if data.len() >= unsolicited_limit {
+                                break;
+                            }
+                        }
+                    }
 
                     if (data.len() as u32) < edtl {
                         // Send R2T to solicit remaining data.
