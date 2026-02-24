@@ -7,15 +7,14 @@ const route = useRoute()
 
 const showNav = computed(() => route.path !== '/login')
 
-const isTabRoute = computed(() => {
-  const name = route.name as string | undefined
-  return name === 'dashboard' || name === 'drive-detail' || name === 'media-detail' || name === 'initiators'
-})
-
 const activeTab = computed(() => {
   const name = route.name as string
-  if (name === 'dashboard' || name === 'drive-detail' || name === 'media-detail') return 'dashboard'
+  if (name === 'devices' || name === 'drive-detail') return 'devices'
+  if (name === 'media' || name === 'media-detail') return 'media'
   if (name === 'initiators') return 'initiators'
+  if (name === 'config') return 'config'
+  if (name === 'docs') return 'docs'
+  if (name === 'api-docs') return 'api-docs'
   return ''
 })
 
@@ -30,13 +29,14 @@ function logout() {
     <header v-if="showNav">
       <nav>
         <router-link to="/" class="brand">QuantumVTL</router-link>
-        <template v-if="isTabRoute">
-          <router-link to="/dashboard" class="tab" :class="{ active: activeTab === 'dashboard' }">Dashboard</router-link>
-          <router-link to="/initiators" class="tab" :class="{ active: activeTab === 'initiators' }">Initiators</router-link>
-        </template>
+        <router-link to="/devices" class="tab" :class="{ active: activeTab === 'devices' }">Devices</router-link>
+        <router-link to="/media" class="tab" :class="{ active: activeTab === 'media' }">Media</router-link>
+        <router-link to="/initiators" class="tab" :class="{ active: activeTab === 'initiators' }">Initiators</router-link>
+        <router-link to="/config" class="tab" :class="{ active: activeTab === 'config' }">Config</router-link>
         <span class="spacer"></span>
-        <router-link to="/api-docs" class="right-link">API Docs</router-link>
-        <a href="#" class="right-link" @click.prevent="logout">Logout</a>
+        <router-link to="/docs" class="tab right-tab" :class="{ active: activeTab === 'docs' }">Docs</router-link>
+        <router-link to="/api-docs" class="tab right-tab" :class="{ active: activeTab === 'api-docs' }">API</router-link>
+        <a href="#" class="tab right-tab" @click.prevent="logout">Logout</a>
       </nav>
     </header>
     <main>
@@ -59,8 +59,9 @@ nav .tab {
 }
 nav .tab:hover { color: #ddd; }
 nav .tab.active { color: #fff; border-bottom-color: #fff; }
-nav .right-link { color: #ccc; text-decoration: none; font-size: 0.9rem; margin-left: 1rem; }
-nav .right-link:hover { color: #fff; }
+nav .tab.right-tab { color: #aaa; }
+nav .tab.right-tab:hover { color: #ddd; }
+nav .tab.right-tab.active { color: #fff; border-bottom-color: #fff; }
 .spacer { flex: 1; }
 main { flex: 1; padding: 1.5rem; max-width: 1400px; margin: 0 auto; width: 100%; }
 </style>
