@@ -1,9 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Login from './views/Login.vue'
 import TabLayout from './views/TabLayout.vue'
-import DashboardView from './views/DashboardView.vue'
+import DevicesView from './views/DevicesView.vue'
+import MediaView from './views/MediaView.vue'
 import DriveDetail from './views/DriveDetail.vue'
 import InitiatorsView from './views/InitiatorsView.vue'
+import ConfigView from './views/ConfigView.vue'
+import DocsView from './views/DocsView.vue'
 import ApiDocs from './views/ApiDocs.vue'
 import MediaDetail from './views/MediaDetail.vue'
 import DeviceDetail from './views/DeviceDetail.vue'
@@ -15,22 +18,26 @@ const routes = [
   {
     path: '/',
     component: TabLayout,
-    redirect: '/dashboard',
+    redirect: '/devices',
     children: [
-      { path: 'dashboard', name: 'dashboard', component: DashboardView },
-      { path: 'ssc/drive/:id', name: 'drive-detail', component: DriveDetail, props: true },
+      { path: 'devices', name: 'devices', component: DevicesView },
+      { path: 'media', name: 'media', component: MediaView },
       { path: 'media/:barcode', name: 'media-detail', component: MediaDetail, props: true },
       { path: 'initiators', name: 'initiators', component: InitiatorsView },
+      { path: 'config', name: 'config', component: ConfigView },
+      { path: 'docs', name: 'docs', component: DocsView },
+      { path: 'api-docs', name: 'api-docs', component: ApiDocs },
+      { path: 'ssc/drive/:id', name: 'drive-detail', component: DriveDetail, props: true },
     ],
   },
-  { path: '/api-docs', component: ApiDocs, meta: { public: true } },
   { path: '/device/changer', component: DeviceDetail },
   { path: '/device/drive/:id', component: DeviceDetail },
   { path: '/device/changer/cmd/:seq', component: CommandDetail },
   { path: '/device/drive/:id/cmd/:seq', component: CommandDetail },
   // Legacy redirects
-  { path: '/smc', redirect: '/dashboard' },
-  { path: '/ssc', redirect: '/dashboard' },
+  { path: '/smc', redirect: '/devices' },
+  { path: '/ssc', redirect: '/devices' },
+  { path: '/dashboard', redirect: '/devices' },
 ]
 
 export const router = createRouter({
