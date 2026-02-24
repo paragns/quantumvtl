@@ -31,7 +31,9 @@ impl RecordDescriptor {
     pub fn byte_len(&self) -> u32 {
         match self {
             RecordDescriptor::Data { length, .. } => *length,
-            RecordDescriptor::CompressedData { compressed_length, .. } => *compressed_length,
+            RecordDescriptor::CompressedData {
+                compressed_length, ..
+            } => *compressed_length,
             RecordDescriptor::Filemark => 0,
         }
     }
@@ -47,7 +49,10 @@ impl RecordDescriptor {
 
     /// True for Data and CompressedData variants.
     pub fn is_data(&self) -> bool {
-        matches!(self, RecordDescriptor::Data { .. } | RecordDescriptor::CompressedData { .. })
+        matches!(
+            self,
+            RecordDescriptor::Data { .. } | RecordDescriptor::CompressedData { .. }
+        )
     }
 
     pub fn is_filemark(&self) -> bool {
@@ -217,9 +222,7 @@ pub fn read_media_detail(data_dir: &std::path::Path, barcode: &str) -> Option<Me
 
     for idx in 0..meta.partition_count {
         let records = store.load_partition_records(idx).unwrap_or_default();
-        let stats = store
-            .load_partition_stats(idx)
-            .unwrap_or_default();
+        let stats = store.load_partition_stats(idx).unwrap_or_default();
 
         let mut filemark_positions = Vec::new();
         let mut data_record_sizes = Vec::new();

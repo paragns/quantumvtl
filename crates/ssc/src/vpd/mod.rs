@@ -6,11 +6,7 @@
 use crate::sense;
 
 /// Handle INQUIRY with EVPD=1 — dispatch to the appropriate VPD page.
-pub fn handle_vpd_page(
-    page_code: u8,
-    alloc_len: usize,
-    serial: &str,
-) -> crate::ScsiResult {
+pub fn handle_vpd_page(page_code: u8, alloc_len: usize, serial: &str) -> crate::ScsiResult {
     let data = match page_code {
         0x00 => page_00_supported(serial),
         0x03 => page_03_firmware(serial),
@@ -34,10 +30,10 @@ pub fn handle_vpd_page(
 fn page_00_supported(_serial: &str) -> Vec<u8> {
     let pages = [0x00, 0x03, 0x80, 0x83, 0x86, 0xB0, 0xB5, 0xC0];
     let mut data = vec![
-        0x01,                   // peripheral qualifier + device type (sequential access)
-        0x00,                   // page code
-        0x00,                   // reserved
-        pages.len() as u8,     // page length
+        0x01,              // peripheral qualifier + device type (sequential access)
+        0x00,              // page code
+        0x00,              // reserved
+        pages.len() as u8, // page length
     ];
     data.extend_from_slice(&pages);
     data
@@ -51,7 +47,7 @@ fn page_03_firmware(_serial: &str) -> Vec<u8> {
     let load_id = b"0000"; // 4-byte LOAD ID
     let fw_rev = b"A1B0"; // 4-byte firmware revision (YMDV format)
     let ru_name = b"QUANTUMVTL      "; // 8-byte RU name (space-padded to 8)
-    // PTF number
+                                       // PTF number
     let ptf = b"0000    "; // 8 bytes
 
     data.extend_from_slice(load_id);
@@ -90,7 +86,7 @@ fn page_83_identification(serial: &str) -> Vec<u8> {
     let mut data = vec![0x01, 0x83, 0x00, 0x00]; // header
 
     // Descriptor 1: T10 Vendor ID based
-    let vendor = b"IBM     ";  // 8 bytes
+    let vendor = b"IBM     "; // 8 bytes
     let product = b"ULT3580-TD9     "; // 16 bytes — TODO: generation-specific
     let serial_bytes = format!("{:0>10}", serial);
 
@@ -113,10 +109,13 @@ fn page_83_identification(serial: &str) -> Vec<u8> {
     desc2.push(0x03); // PIV=0, association=0, identifier type=3 (NAA)
     desc2.push(0x00); // reserved
     desc2.push(0x08); // identifier length = 8
-    // NAA 5 + OUI 00:11:22 + vendor-specific from serial hash
+                      // NAA 5 + OUI 00:11:22 + vendor-specific from serial hash
     let serial_hash = simple_hash(serial);
     desc2.extend_from_slice(&[
-        0x50, 0x01, 0x12, 0x20,
+        0x50,
+        0x01,
+        0x12,
+        0x20,
         ((serial_hash >> 24) & 0xFF) as u8,
         ((serial_hash >> 16) & 0xFF) as u8,
         ((serial_hash >> 8) & 0xFF) as u8,

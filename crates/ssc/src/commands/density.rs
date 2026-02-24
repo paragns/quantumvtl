@@ -16,7 +16,7 @@ pub fn handle_report_density_support(cdb: &[u8]) -> ScsiResult {
     let mut desc = vec![0u8; 52];
     desc[0] = 0x60; // Primary density code (LTO-9)
     desc[1] = 0x60; // Secondary density code
-    // Byte 2: DLV=0, DEFLT=1 (bit 5)
+                    // Byte 2: DLV=0, DEFLT=1 (bit 5)
     desc[2] = 0x20;
     // Bytes 4-7: bits per mm (unused for us)
     // Bytes 8-9: media width (12700 = 12.65mm in tenths of mm)
@@ -25,7 +25,7 @@ pub fn handle_report_density_support(cdb: &[u8]) -> ScsiResult {
     // Bytes 10-11: tracks
     desc[10] = 0x00;
     desc[11] = 0x20; // 32 tracks
-    // Bytes 12-15: capacity (MB) — 18000000 MB = 0x01312D00
+                     // Bytes 12-15: capacity (MB) — 18000000 MB = 0x01312D00
     desc[12] = 0x01;
     desc[13] = 0x13;
     desc[14] = 0x2D;

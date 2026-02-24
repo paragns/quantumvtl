@@ -314,12 +314,26 @@ impl LogPage for VolumeStatisticsLogPage {
 
         // Per-partition stats (simplified — partition 0 only for now)
         for i in 0..s.partition_count as u16 {
-            let native_written = s.partition_native_written.get(i as usize).copied().unwrap_or(0);
-            let remaining = s.partition_remaining_bytes.get(i as usize).copied().unwrap_or(0);
+            let native_written = s
+                .partition_native_written
+                .get(i as usize)
+                .copied()
+                .unwrap_or(0);
+            let remaining = s
+                .partition_remaining_bytes
+                .get(i as usize)
+                .copied()
+                .unwrap_or(0);
             // 0202h+i: Per-partition native capacity written
-            params.push(LogParameter::counter64(0x0202 + i, native_written / 1_000_000));
+            params.push(LogParameter::counter64(
+                0x0202 + i,
+                native_written / 1_000_000,
+            ));
             // 0204h+i: Per-partition remaining to EW
-            params.push(LogParameter::counter64(0x0204 + i * 2, remaining * 98 / 100 / 1_000_000));
+            params.push(LogParameter::counter64(
+                0x0204 + i * 2,
+                remaining * 98 / 100 / 1_000_000,
+            ));
         }
 
         params
@@ -380,7 +394,11 @@ impl LogPage for TapeCapacityLogPage {
         let mut params = Vec::new();
         // For each partition: remaining capacity MiB, then max capacity MiB
         for i in 0..std::cmp::max(s.partition_count, 1) as u16 {
-            let remaining = s.partition_remaining_bytes.get(i as usize).copied().unwrap_or(0);
+            let remaining = s
+                .partition_remaining_bytes
+                .get(i as usize)
+                .copied()
+                .unwrap_or(0);
             let remaining_mib = remaining / (1024 * 1024);
             // 0001h, 0002h: partition remaining capacity MiB
             params.push(LogParameter::counter32(0x0001 + i, remaining_mib as u32));

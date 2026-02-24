@@ -7,7 +7,7 @@ use crate::ScsiResult;
 /// Handle LOG SENSE (4Dh).
 pub fn handle_log_sense(cdb: &[u8], registry: &LogPageRegistry) -> ScsiResult {
     let _ppc = cdb[1] & 0x02 != 0; // Parameter Pointer Control
-    let _sp = cdb[1] & 0x01 != 0;  // Saving Parameters
+    let _sp = cdb[1] & 0x01 != 0; // Saving Parameters
     let page_code = cdb[2] & 0x3F;
     let subpage = cdb[3];
     let alloc_len = ((cdb[7] as usize) << 8) | (cdb[8] as usize);

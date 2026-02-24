@@ -146,7 +146,8 @@ pub fn handle_mode_select_6(
             break;
         }
 
-        let _result = registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
+        let _result =
+            registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
         // TODO: handle errors from apply_select
 
         offset = page_data_end;
@@ -186,7 +187,8 @@ pub fn handle_mode_select_10(
             break;
         }
 
-        let _result = registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
+        let _result =
+            registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
         offset = page_data_end;
     }
 

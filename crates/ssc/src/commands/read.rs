@@ -3,14 +3,13 @@
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
-use tracing::warn;
+use tracing::{trace, warn};
 
 /// Handle READ(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
 pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
     let _sili = cdb[1] & 0x02 != 0;
     let fixed = cdb[1] & 0x01 != 0;
-    let transfer_length =
-        ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
+    let transfer_length = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
 
     if transfer_length == 0 {
         return sense::good();
@@ -18,6 +17,13 @@ pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResul
 
     let pos = media_state.position.block_number as usize;
     let record_count = media_state.current_partition().records.len();
+
+    trace!(
+        partition = media_state.position.partition,
+        position = pos,
+        record_count,
+        "READ(6)"
+    );
 
     // Check for EOD (blank check)
     if pos >= record_count {
@@ -39,7 +45,10 @@ pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResul
 }
 
 /// Read record data from the store via its descriptor, decompressing if needed.
-fn read_record_data(ms: &mut DriveMediaState, desc: &RecordDescriptor) -> Result<Vec<u8>, ScsiResult> {
+fn read_record_data(
+    ms: &mut DriveMediaState,
+    desc: &RecordDescriptor,
+) -> Result<Vec<u8>, ScsiResult> {
     match desc {
         RecordDescriptor::Data { offset, length } => {
             ms.store.read_data(*offset, *length).map_err(|e| {
@@ -52,10 +61,13 @@ fn read_record_data(ms: &mut DriveMediaState, desc: &RecordDescriptor) -> Result
             compressed_length,
             ..
         } => {
-            let compressed = ms.store.read_data(*offset, *compressed_length).map_err(|e| {
-                warn!(error = %e, "failed to read compressed data from tape store");
-                SenseBuilder::medium_error().to_check_condition()
-            })?;
+            let compressed = ms
+                .store
+                .read_data(*offset, *compressed_length)
+                .map_err(|e| {
+                    warn!(error = %e, "failed to read compressed data from tape store");
+                    SenseBuilder::medium_error().to_check_condition()
+                })?;
             zstd::decode_all(compressed.as_slice()).map_err(|e| {
                 warn!(error = %e, "failed to decompress tape record");
                 SenseBuilder::medium_error().to_check_condition()

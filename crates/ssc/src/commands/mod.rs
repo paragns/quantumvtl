@@ -1,15 +1,15 @@
+pub mod attribute;
 pub mod control;
+pub mod density;
+pub mod erase;
+pub mod filemarks;
 pub mod inquiry;
+pub mod log;
+pub mod maintenance;
+pub mod mode;
+pub mod position;
 pub mod read;
 pub mod write;
-pub mod position;
-pub mod filemarks;
-pub mod mode;
-pub mod log;
-pub mod density;
-pub mod maintenance;
-pub mod attribute;
-pub mod erase;
 
 /// SCSI command opcodes — SSC (tape drive) commands.
 pub mod opcodes {

@@ -140,9 +140,7 @@ impl MamAttributes {
     /// Increment the load count.
     pub fn increment_load_count(&mut self) {
         if let Some(attr) = self.attributes.get_mut(&attr::LOAD_COUNT) {
-            let mut count = u32::from_be_bytes(
-                attr.value[..4].try_into().unwrap_or([0; 4]),
-            );
+            let mut count = u32::from_be_bytes(attr.value[..4].try_into().unwrap_or([0; 4]));
             count = count.saturating_add(1);
             attr.value = count.to_be_bytes().to_vec();
         }

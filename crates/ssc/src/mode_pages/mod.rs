@@ -5,7 +5,7 @@
 //! dispatch, and PC (page control) field semantics.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Page Control field values from MODE SENSE CDB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,12 @@ impl ModePageRegistry {
     }
 
     /// Apply MODE SELECT to a specific page.
-    pub fn apply_select(&self, page_code: u8, subpage: u8, data: &[u8]) -> Result<(), &'static str> {
+    pub fn apply_select(
+        &self,
+        page_code: u8,
+        subpage: u8,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
         let page = self
             .pages
             .iter()
@@ -258,9 +263,124 @@ impl ModePage for DataCompressionModePage {
     }
 }
 
+// --- Medium Partition mode page (11h) ---
+
+/// Shared partition state between Mode Page 11h and FORMAT MEDIUM.
+pub struct PartitionPageState {
+    /// Maximum additional partitions (geometry.max_partitions - 1, read-only).
+    pub max_additional: u8,
+    /// Current additional partitions (media.partitions.len() - 1).
+    pub current_additional: u8,
+    /// Set by MODE SELECT, consumed by FORMAT MEDIUM.
+    pub pending_additional: Option<u8>,
+}
+
+/// Thread-safe shared partition state.
+pub type SharedPartitionState = Arc<Mutex<PartitionPageState>>;
+
+/// Real Medium Partition mode page (11h) backed by shared partition state.
+///
+/// SSC-4 / LTO spec: page code 0x11, variable length.
+/// Byte 0: max additional partitions (read-only)
+/// Byte 1: additional partitions defined
+/// Byte 2: FDP | SDP | IDP | PSUM(2) | POFM | CLEAR | ADDP
+/// Byte 3: medium format recognition (0x03 = format and partition recognition)
+/// Bytes 4+: partition size descriptors (2 bytes each)
+pub struct MediumPartitionModePage {
+    state: SharedPartitionState,
+}
+
+impl MediumPartitionModePage {
+    pub fn new(state: SharedPartitionState) -> Self {
+        Self { state }
+    }
+}
+
+impl ModePage for MediumPartitionModePage {
+    fn page_code(&self) -> u8 {
+        0x11
+    }
+
+    fn page_data(&self, pc: PageControl) -> Vec<u8> {
+        let st = self.state.lock().unwrap();
+        match pc {
+            PageControl::Current | PageControl::Saved => {
+                // Variable-length: 4 fixed bytes + 2 bytes per partition size descriptor
+                let additional = st.current_additional;
+                let total_partitions = additional as usize + 1;
+                let mut data = vec![0u8; 4 + total_partitions * 2];
+                data[0] = st.max_additional; // max additional partitions
+                data[1] = additional; // additional partitions defined
+                                      // Byte 2: IDP=1 if partitioned (bit 5), PSUM=00 (units in MB), rest 0
+                if additional > 0 {
+                    data[2] = 0x20; // IDP=1
+                }
+                data[3] = 0x03; // medium format recognition
+                                // Partition size descriptors: all zeros = capacity split evenly by drive
+                data
+            }
+            PageControl::Default => {
+                // Default: single partition (additional=0)
+                let mut data = vec![0u8; 4];
+                data[0] = st.max_additional;
+                data[1] = 0; // additional=0
+                data[2] = 0;
+                data[3] = 0x03;
+                data
+            }
+            PageControl::Changeable => {
+                // Changeable mask: bytes 1, 2 are changeable; sizes are changeable
+                let additional = st.current_additional;
+                let total_partitions = additional as usize + 1;
+                let mut data = vec![0u8; 4 + total_partitions * 2];
+                data[0] = 0x00; // max_additional not changeable
+                data[1] = 0xFF; // additional partitions changeable
+                data[2] = 0x78; // IDP + SDP + FDP + PSUM bits changeable
+                data[3] = 0x00; // MFR not changeable
+                                // Partition sizes changeable
+                for i in 0..total_partitions * 2 {
+                    data[4 + i] = 0xFF;
+                }
+                data
+            }
+        }
+    }
+
+    fn page_length(&self) -> u8 {
+        let st = self.state.lock().unwrap();
+        let total_partitions = st.current_additional as usize + 1;
+        (4 + total_partitions * 2) as u8
+    }
+
+    fn saveable(&self) -> bool {
+        true
+    }
+
+    fn apply_select(&self, data: &[u8]) -> Result<(), &'static str> {
+        if data.len() < 2 {
+            return Err("mode page 11h data too short");
+        }
+        let mut st = self.state.lock().unwrap();
+        let additional = data[1];
+        if additional > st.max_additional {
+            return Err("additional partitions exceeds maximum");
+        }
+        // IDP (bit 5 of byte 2) must be set if additional > 0
+        if additional > 0 && data.len() >= 3 && data[2] & 0x20 == 0 {
+            return Err("IDP must be set when defining additional partitions");
+        }
+        st.pending_additional = Some(additional);
+        Ok(())
+    }
+}
+
 /// Create the default mode page registry with stub implementations for all
-/// mandatory mode pages, plus the real Data Compression mode page (0Fh).
-pub fn default_registry(dce: Arc<AtomicBool>) -> ModePageRegistry {
+/// mandatory mode pages, plus the real Data Compression mode page (0Fh)
+/// and Medium Partition mode page (11h).
+pub fn default_registry(
+    dce: Arc<AtomicBool>,
+    partition_state: SharedPartitionState,
+) -> ModePageRegistry {
     let mut reg = ModePageRegistry::new();
 
     // MP 01h: Read-Write Error Recovery (12 bytes)
@@ -273,7 +393,11 @@ pub fn default_registry(dce: Arc<AtomicBool>) -> ModePageRegistry {
     reg.register(Box::new(StubModePage::new(0x0A, vec![0; 10])));
 
     // MP 0Ah[01h]: Control Extension (28 bytes)
-    reg.register(Box::new(StubModePage::with_subpage(0x0A, 0x01, vec![0; 28])));
+    reg.register(Box::new(StubModePage::with_subpage(
+        0x0A,
+        0x01,
+        vec![0; 28],
+    )));
 
     // MP 0Ah[F0h]: Control Data Protection (4 bytes)
     reg.register(Box::new(StubModePage::with_subpage(0x0A, 0xF0, vec![0; 4])));
@@ -295,10 +419,14 @@ pub fn default_registry(dce: Arc<AtomicBool>) -> ModePageRegistry {
     // WRITE MODE = 00h (overwrite allowed)
     // SHORT ERASE MODE = 02h
     dev_config_ext[1] = 0x02;
-    reg.register(Box::new(StubModePage::with_subpage(0x10, 0x01, dev_config_ext)));
+    reg.register(Box::new(StubModePage::with_subpage(
+        0x10,
+        0x01,
+        dev_config_ext,
+    )));
 
-    // MP 11h: Medium Partition (8 bytes minimum)
-    reg.register(Box::new(StubModePage::new(0x11, vec![0; 8])));
+    // MP 11h: Medium Partition — real implementation with shared partition state
+    reg.register(Box::new(MediumPartitionModePage::new(partition_state)));
 
     // MP 1Ah: Power Condition (10 bytes)
     reg.register(Box::new(StubModePage::new(0x1A, vec![0; 10])));

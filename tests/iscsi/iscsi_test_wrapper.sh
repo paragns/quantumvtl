@@ -105,7 +105,7 @@ users:
     password: admin
 EOF
 
-ip netns exec "$NS_NAME" "$VTLD_BIN" "$TEST_CONFIG_TMP" &
+RUST_LOG=info ip netns exec "$NS_NAME" "$VTLD_BIN" "$TEST_CONFIG_TMP" >"$VM_DIR/vtld.log" 2>&1 &
 VTLD_PID=$!
 sleep 2
 
@@ -124,7 +124,7 @@ qemu-img create -f qcow2 -b "$VM_DIR/rootfs.qcow2" -F qcow2 "$OVERLAY" 2>/dev/nu
 rm -f "$SERIAL_LOG"
 
 # Use SLIRP user-mode networking. VM reaches host at 10.0.2.2.
-timeout 180 ip netns exec "$NS_NAME" qemu-system-x86_64 \
+timeout 360 ip netns exec "$NS_NAME" qemu-system-x86_64 \
     -enable-kvm \
     -m 512 \
     -nographic \

@@ -9,10 +9,7 @@ use crate::snapshot::DriveActivity;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DriveEvent {
     /// Drive activity state changed.
-    StateChange {
-        drive: u8,
-        state: DriveActivity,
-    },
+    StateChange { drive: u8, state: DriveActivity },
     /// Tape position updated.
     PositionUpdate {
         drive: u8,

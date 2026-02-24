@@ -3,7 +3,7 @@
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
-use tracing::{trace, warn};
+use tracing::{info, warn};
 
 /// Compress and write a single block to the store.
 ///
@@ -47,10 +47,13 @@ fn write_block(
 }
 
 /// Handle WRITE(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
-pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_write_6(
+    cdb: &[u8],
+    data_out: &[u8],
+    media_state: &mut DriveMediaState,
+) -> ScsiResult {
     let fixed = cdb[1] & 0x01 != 0;
-    let transfer_length =
-        ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
+    let transfer_length = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
 
     if transfer_length == 0 {
         return sense::good();
@@ -84,7 +87,10 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
                     };
 
                 let record_num = media_state.current_partition().records.len() as u64;
-                if let Err(e) = media_state.store.save_record(partition_idx, record_num, &desc) {
+                if let Err(e) = media_state
+                    .store
+                    .save_record(partition_idx, record_num, &desc)
+                {
                     warn!(error = %e, "failed to save record index");
                     return SenseBuilder::medium_error().to_check_condition();
                 }
@@ -105,7 +111,10 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
             };
 
         let record_num = media_state.current_partition().records.len() as u64;
-        if let Err(e) = media_state.store.save_record(partition_idx, record_num, &desc) {
+        if let Err(e) = media_state
+            .store
+            .save_record(partition_idx, record_num, &desc)
+        {
             warn!(error = %e, "failed to save record index");
             return SenseBuilder::medium_error().to_check_condition();
         }
@@ -117,7 +126,8 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
         media_state.position.block_number += 1;
     }
 
-    trace!(
+    info!(
+        partition = media_state.position.partition,
         position = media_state.position.block_number,
         total_records = media_state.current_partition().records.len(),
         "WRITE complete"
@@ -128,50 +138,55 @@ pub fn handle_write_6(cdb: &[u8], data_out: &[u8], media_state: &mut DriveMediaS
 
 /// Truncate records at the given position and clean up the store.
 fn truncate_at_position(media_state: &mut DriveMediaState, pos: usize, partition_idx: u32) {
+    let num_partitions = media_state.media.partitions.len();
     let partition = media_state.current_partition_mut();
     let old_len = partition.records.len();
     if pos < old_len {
-        // Find the data file truncation point: the end of the last record we're keeping
-        let data_truncate_len = if pos > 0 {
-            // Find the highest data offset+length among records we're keeping
-            let mut max_end: u64 = 0;
-            for rec in &partition.records[..pos] {
-                match rec {
-                    RecordDescriptor::Data { offset, length } => {
-                        let end = offset + *length as u64;
-                        if end > max_end {
-                            max_end = end;
-                        }
-                    }
-                    RecordDescriptor::CompressedData {
-                        offset,
-                        compressed_length,
-                        ..
-                    } => {
-                        let end = offset + *compressed_length as u64;
-                        if end > max_end {
-                            max_end = end;
-                        }
-                    }
-                    RecordDescriptor::Filemark => {}
-                }
-            }
-            max_end
-        } else {
-            0
-        };
-
         partition.records.truncate(pos);
         partition.rebuild_filemark_index();
 
         // Remove redb record entries from the truncation point onward
-        if let Err(e) = media_state.store.remove_records_from(partition_idx, pos as u64) {
+        if let Err(e) = media_state
+            .store
+            .remove_records_from(partition_idx, pos as u64)
+        {
             warn!(error = %e, "failed to remove truncated records from store");
         }
 
-        // Truncate the data file
-        if let Err(e) = media_state.store.truncate_data(data_truncate_len) {
-            warn!(error = %e, "failed to truncate data file");
+        // Only truncate the data file for single-partition tapes. With multiple
+        // partitions the data file is shared, so truncating based on one partition's
+        // records would destroy data belonging to other partitions.
+        if num_partitions <= 1 {
+            let data_truncate_len = if pos > 0 {
+                let mut max_end: u64 = 0;
+                for rec in &media_state.current_partition().records[..pos] {
+                    match rec {
+                        RecordDescriptor::Data { offset, length } => {
+                            let end = offset + *length as u64;
+                            if end > max_end {
+                                max_end = end;
+                            }
+                        }
+                        RecordDescriptor::CompressedData {
+                            offset,
+                            compressed_length,
+                            ..
+                        } => {
+                            let end = offset + *compressed_length as u64;
+                            if end > max_end {
+                                max_end = end;
+                            }
+                        }
+                        RecordDescriptor::Filemark => {}
+                    }
+                }
+                max_end
+            } else {
+                0
+            };
+            if let Err(e) = media_state.store.truncate_data(data_truncate_len) {
+                warn!(error = %e, "failed to truncate data file");
+            }
         }
     }
 }

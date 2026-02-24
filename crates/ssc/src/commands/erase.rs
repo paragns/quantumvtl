@@ -54,7 +54,10 @@ pub fn handle_erase(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult
             partition.records.truncate(pos);
             partition.rebuild_filemark_index();
 
-            if let Err(e) = media_state.store.remove_records_from(partition_idx, pos as u64) {
+            if let Err(e) = media_state
+                .store
+                .remove_records_from(partition_idx, pos as u64)
+            {
                 warn!(error = %e, "failed to remove records from store");
             }
             if let Err(e) = media_state.store.truncate_data(max_end) {
@@ -69,7 +72,11 @@ pub fn handle_erase(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult
 }
 
 /// Handle FORMAT MEDIUM (04h).
-pub fn handle_format_medium(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_format_medium(
+    cdb: &[u8],
+    media_state: &mut DriveMediaState,
+    partition_state: &crate::mode_pages::SharedPartitionState,
+) -> ScsiResult {
     let _immed = cdb[1] & 0x01 != 0;
     let _verify = cdb[1] & 0x02 != 0;
     let _format = cdb[2]; // Format type
@@ -78,14 +85,32 @@ pub fn handle_format_medium(cdb: &[u8], media_state: &mut DriveMediaState) -> Sc
         return SenseBuilder::write_protected().to_check_condition();
     }
 
-    // Clear all partitions
+    // Read pending partition count from MODE SELECT page 11h, then clear it
+    let target_partitions = {
+        let mut ps = partition_state.lock().unwrap();
+        let additional = ps.pending_additional.take().unwrap_or(0);
+        additional as usize + 1
+    };
+
+    // Clear all existing partitions
     for partition in &mut media_state.media.partitions {
         partition.records.clear();
         partition.filemark_positions.clear();
         partition.bytes_written_native = 0;
         partition.bytes_written_compressed = 0;
         partition.bytes_read_native = 0;
+        partition.bytes_read_compressed = 0;
     }
+
+    // Resize to target partition count
+    use crate::media::tape::TapePartition;
+    media_state
+        .media
+        .partitions
+        .resize_with(target_partitions, TapePartition::new);
+    media_state.media.partitions.truncate(target_partitions);
+
+    // Reset position to partition 0, block 0
     media_state.position.block_number = 0;
     media_state.position.file_number = 0;
     media_state.position.partition = 0;
@@ -101,9 +126,20 @@ pub fn handle_format_medium(cdb: &[u8], media_state: &mut DriveMediaState) -> Sc
         warn!(error = %e, "failed to clear partition stats in store");
     }
 
+    // Update shared partition state
+    {
+        let mut ps = partition_state.lock().unwrap();
+        ps.current_additional = (target_partitions as u8).saturating_sub(1);
+    }
+
+    // Persist updated media meta (includes new partition count)
+    if let Err(e) = media_state.store.save_media_meta(&media_state.media) {
+        warn!(error = %e, "failed to persist media metadata after FORMAT MEDIUM");
+    }
+
     // Mark media optimization as done (LTO-9)
     media_state.media.optimization_done = true;
 
-    trace!("FORMAT MEDIUM: tape formatted");
+    trace!(target_partitions, "FORMAT MEDIUM: tape formatted");
     sense::good()
 }

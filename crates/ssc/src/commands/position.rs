@@ -7,18 +7,18 @@ use tracing::trace;
 
 /// Handle REWIND (01h).
 pub fn handle_rewind(media_state: &mut DriveMediaState) -> ScsiResult {
+    let old_part = media_state.position.partition;
     media_state.position.block_number = 0;
     media_state.position.file_number = 0;
     media_state.position.partition = 0;
-    trace!("REWIND: position=0");
+    trace!(old_partition = old_part, "REWIND: position=0, partition=0");
     sense::good()
 }
 
 /// Handle SPACE(6) (11h) — CDB[1] bits 0-2=code, CDB[2-4]=signed 24-bit count.
 pub fn handle_space_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
     let code = cdb[1] & 0x07;
-    let raw_count =
-        ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
+    let raw_count = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
     let count: i32 = if raw_count & 0x800000 != 0 {
         (raw_count | 0xFF000000) as i32
     } else {
@@ -125,6 +125,9 @@ pub fn handle_read_position(cdb: &[u8], media_state: &DriveMediaState) -> ScsiRe
         data[0] |= 0x40; // EOP
     }
 
+    // Byte 1: Partition number
+    data[1] = media_state.position.partition;
+
     // Bytes 4-7: first block location (BE32)
     data[4] = ((pos >> 24) & 0xFF) as u8;
     data[5] = ((pos >> 16) & 0xFF) as u8;
@@ -158,16 +161,29 @@ pub fn handle_read_block_limits(media_state: &DriveMediaState) -> ScsiResult {
     sense::good_with_data(data)
 }
 
-/// Handle LOCATE(10) (2Bh) — stub.
+/// Handle LOCATE(10) (2Bh).
 pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
     let _immed = cdb[1] & 0x01 != 0;
-    let _cp = cdb[1] & 0x02 != 0;
+    let cp = cdb[1] & 0x02 != 0;
     let dest_type = (cdb[1] >> 2) & 0x03;
+    let partition = cdb[8];
 
     let block_address = ((cdb[3] as u64) << 24)
         | ((cdb[4] as u64) << 16)
         | ((cdb[5] as u64) << 8)
         | (cdb[6] as u64);
+
+    // Handle partition change if CP (Change Partition) bit is set
+    if cp {
+        if partition as usize >= media_state.media.partitions.len() {
+            return SenseBuilder::invalid_field_in_cdb().to_check_condition();
+        }
+        if partition != media_state.position.partition {
+            media_state.position.partition = partition;
+            media_state.position.block_number = 0;
+            media_state.position.file_number = 0;
+        }
+    }
 
     match dest_type {
         0 => {
@@ -200,19 +216,23 @@ pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
     );
 
     trace!(
+        cp,
         block_address,
-        position = media_state.position.block_number,
-        "LOCATE complete"
+        cdb_partition = partition,
+        result_partition = media_state.position.partition,
+        result_block = media_state.position.block_number,
+        num_partitions = media_state.media.partitions.len(),
+        "LOCATE(10) complete"
     );
     sense::good()
 }
 
-/// Handle LOCATE(16) (92h) — stub.
+/// Handle LOCATE(16) (92h).
 pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
     let _immed = cdb[1] & 0x01 != 0;
-    let _cp = cdb[1] & 0x02 != 0;
+    let cp = cdb[1] & 0x02 != 0;
     let dest_type = (cdb[1] >> 2) & 0x03;
-    let _partition = cdb[3];
+    let partition = cdb[3];
 
     let block_address = ((cdb[4] as u64) << 56)
         | ((cdb[5] as u64) << 48)
@@ -222,6 +242,18 @@ pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
         | ((cdb[9] as u64) << 16)
         | ((cdb[10] as u64) << 8)
         | (cdb[11] as u64);
+
+    // Handle partition change if CP (Change Partition) bit is set
+    if cp {
+        if partition as usize >= media_state.media.partitions.len() {
+            return SenseBuilder::invalid_field_in_cdb().to_check_condition();
+        }
+        if partition != media_state.position.partition {
+            media_state.position.partition = partition;
+            media_state.position.block_number = 0;
+            media_state.position.file_number = 0;
+        }
+    }
 
     match dest_type {
         0 => {
@@ -242,6 +274,7 @@ pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
 
     trace!(
         block_address,
+        partition = media_state.position.partition,
         position = media_state.position.block_number,
         "LOCATE(16) complete"
     );
@@ -274,10 +307,7 @@ pub fn handle_space_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRes
 }
 
 /// Count filemarks in partition before the given position.
-fn count_filemarks_before(
-    partition: &crate::media::tape::TapePartition,
-    position: u64,
-) -> u64 {
+fn count_filemarks_before(partition: &crate::media::tape::TapePartition, position: u64) -> u64 {
     partition
         .filemark_positions
         .iter()

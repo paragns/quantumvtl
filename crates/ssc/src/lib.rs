@@ -25,9 +25,9 @@ use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
 use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
-use media::tape::{DriveMediaState, RecordDescriptor, TapeMedia};
 pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
-use mode_pages::ModePageRegistry;
+use media::tape::{DriveMediaState, TapeMedia};
+use mode_pages::{ModePageRegistry, SharedPartitionState};
 use snapshot::{DriveActivity, DriveSnapshot};
 
 /// Internal drive state protected by a mutex.
@@ -58,6 +58,8 @@ pub struct TapeDrive {
     log_pages: LogPageRegistry,
     /// Shared compression-enable flag (driven by Mode Page 0Fh).
     compression_enabled: Arc<AtomicBool>,
+    /// Shared partition page state (driven by Mode Page 11h, consumed by FORMAT MEDIUM).
+    partition_state: SharedPartitionState,
     /// Shared drive statistics (consumed by live log pages).
     drive_stats: SharedDriveStats,
 }
@@ -106,6 +108,12 @@ impl TapeDrive {
 
         let dce = Arc::new(AtomicBool::new(true)); // default: compression enabled
         let drive_stats: SharedDriveStats = Arc::new(Mutex::new(DriveStats::default()));
+        let partition_state: SharedPartitionState =
+            Arc::new(Mutex::new(mode_pages::PartitionPageState {
+                max_additional: generation.geometry().max_partitions.saturating_sub(1),
+                current_additional: 0,
+                pending_additional: None,
+            }));
 
         Self {
             inquiry_data: inq,
@@ -117,16 +125,21 @@ impl TapeDrive {
                 activity: DriveActivity::Empty,
                 backhitch_count: 0,
             }),
-            mode_pages: mode_pages::default_registry(dce.clone()),
+            mode_pages: mode_pages::default_registry(dce.clone(), partition_state.clone()),
             log_pages: log_pages::default_registry(drive_stats.clone()),
             compression_enabled: dce,
+            partition_state,
             drive_stats,
         }
     }
 
     /// Refresh shared DriveStats from current media state.
     /// Must be called with DriveState already locked.
-    fn refresh_stats(drive_stats: &SharedDriveStats, media_state: Option<&DriveMediaState>, generation: LtoGeneration) {
+    fn refresh_stats(
+        drive_stats: &SharedDriveStats,
+        media_state: Option<&DriveMediaState>,
+        generation: LtoGeneration,
+    ) {
         let mut s = drive_stats.lock().unwrap();
         match media_state {
             Some(ms) => {
@@ -139,16 +152,28 @@ impl TapeDrive {
                 s.total_bytes_read_native = ms.media.total_native_bytes_read();
                 s.total_bytes_read_compressed = ms.media.total_bytes_read_compressed();
                 s.partition_count = ms.media.partitions.len() as u8;
-                s.partition_native_written = ms.media.partitions.iter()
-                    .map(|p| p.bytes_written_native).collect();
-                s.partition_compressed_written = ms.media.partitions.iter()
-                    .map(|p| p.bytes_written_compressed).collect();
-                s.partition_remaining_bytes = ms.media.partitions.iter()
+                s.partition_native_written = ms
+                    .media
+                    .partitions
+                    .iter()
+                    .map(|p| p.bytes_written_native)
+                    .collect();
+                s.partition_compressed_written = ms
+                    .media
+                    .partitions
+                    .iter()
+                    .map(|p| p.bytes_written_compressed)
+                    .collect();
+                s.partition_remaining_bytes = ms
+                    .media
+                    .partitions
+                    .iter()
                     .map(|p| {
-                        let per_partition_cap = geometry.native_capacity_bytes
-                            / ms.media.partitions.len() as u64;
+                        let per_partition_cap =
+                            geometry.native_capacity_bytes / ms.media.partitions.len() as u64;
                         per_partition_cap.saturating_sub(p.bytes_written_native)
-                    }).collect();
+                    })
+                    .collect();
                 s.total_loads = ms.media.total_loads;
                 s.compression_enabled = ms.media.compression_enabled;
             }
@@ -359,11 +384,22 @@ impl MediaLoadNotify for TapeDrive {
         self.compression_enabled
             .store(media.compression_enabled, Ordering::Relaxed);
 
+        // Update shared partition page state from loaded media
+        {
+            let mut ps = self.partition_state.lock().unwrap();
+            ps.current_additional = (media.partitions.len() as u8).saturating_sub(1);
+            ps.pending_additional = None;
+        }
+
         // Set MAM capacity attributes (8-byte big-endian MB values)
         let cap_mb = media.native_capacity_bytes() / 1_000_000;
         let remaining_mb = media.approximate_remaining_mb();
-        media.mam.set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
-        media.mam.set_device_managed(0x0001, cap_mb.to_be_bytes().to_vec());
+        media
+            .mam
+            .set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
+        media
+            .mam
+            .set_device_managed(0x0001, cap_mb.to_be_bytes().to_vec());
 
         // Persist the initial metadata (including updated load count)
         if let Err(e) = store.save_media_meta(&media) {
@@ -394,11 +430,17 @@ impl MediaLoadNotify for TapeDrive {
 
             // Update MAM capacity attributes (8-byte big-endian MB values)
             let remaining_mb = ms.media.approximate_remaining_mb();
-            ms.media.mam.set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
+            ms.media
+                .mam
+                .set_device_managed(0x0000, remaining_mb.to_be_bytes().to_vec());
             let written_mb = ms.media.total_native_bytes_written() / 1_000_000;
-            ms.media.mam.set_device_managed(0x0220, written_mb.to_be_bytes().to_vec());
+            ms.media
+                .mam
+                .set_device_managed(0x0220, written_mb.to_be_bytes().to_vec());
             let read_mb = ms.media.total_native_bytes_read() / 1_000_000;
-            ms.media.mam.set_device_managed(0x0222, read_mb.to_be_bytes().to_vec());
+            ms.media
+                .mam
+                .set_device_managed(0x0222, read_mb.to_be_bytes().to_vec());
 
             if let Err(e) = ms.store.save_media_meta(&ms.media) {
                 warn!(barcode, error = %e, "failed to persist media metadata on unload");
@@ -412,6 +454,13 @@ impl MediaLoadNotify for TapeDrive {
                 warn!(barcode, error = %e, "failed to persist MAM on unload");
             }
             trace!(barcode, "flushed tape metadata to redb store");
+        }
+
+        // Reset shared partition page state
+        {
+            let mut ps = self.partition_state.lock().unwrap();
+            ps.current_additional = 0;
+            ps.pending_additional = None;
         }
 
         // Update shared stats (media unloaded)
@@ -459,11 +508,17 @@ impl ScsiDevice for TapeDrive {
         match opcode {
             // Mode page commands — work even without media
             MODE_SENSE_6 => {
-                let wp = st.media_state.as_ref().map_or(false, |ms| ms.media.write_protected);
+                let wp = st
+                    .media_state
+                    .as_ref()
+                    .map_or(false, |ms| ms.media.write_protected);
                 return commands::mode::handle_mode_sense_6(cdb, &self.mode_pages, wp);
             }
             MODE_SENSE_10 => {
-                let wp = st.media_state.as_ref().map_or(false, |ms| ms.media.write_protected);
+                let wp = st
+                    .media_state
+                    .as_ref()
+                    .map_or(false, |ms| ms.media.write_protected);
                 return commands::mode::handle_mode_sense_10(cdb, &self.mode_pages, wp);
             }
             MODE_SELECT_6 => {
@@ -510,27 +565,31 @@ impl ScsiDevice for TapeDrive {
             LOCATE_10 => commands::position::handle_locate_10(cdb, media_state),
             LOCATE_16 => commands::position::handle_locate_16(cdb, media_state),
             ERASE_6 => commands::erase::handle_erase(cdb, media_state),
-            FORMAT_MEDIUM => commands::erase::handle_format_medium(cdb, media_state),
-            ALLOW_OVERWRITE => commands::control::handle_allow_overwrite(cdb),
-            READ_ATTRIBUTE => commands::attribute::handle_read_attribute(cdb, &media_state.media.mam),
-            WRITE_ATTRIBUTE => {
-                commands::attribute::handle_write_attribute(cdb, data_out, &mut media_state.media.mam)
+            FORMAT_MEDIUM => {
+                commands::erase::handle_format_medium(cdb, media_state, &self.partition_state)
             }
+            ALLOW_OVERWRITE => commands::control::handle_allow_overwrite(cdb),
+            READ_ATTRIBUTE => {
+                commands::attribute::handle_read_attribute(cdb, &media_state.media.mam)
+            }
+            WRITE_ATTRIBUTE => commands::attribute::handle_write_attribute(
+                cdb,
+                data_out,
+                &mut media_state.media.mam,
+            ),
             _ => {
-                trace!(opcode = format!("{:02X}h", opcode), "unsupported SSC command");
+                trace!(
+                    opcode = format!("{:02X}h", opcode),
+                    "unsupported SSC command"
+                );
                 sense::SenseBuilder::invalid_opcode().to_check_condition()
             }
         };
 
         // Refresh shared stats after data-path commands
         match opcode {
-            WRITE_6 | READ_6 | WRITE_FILEMARKS_6 | SPACE_6 | SPACE_16 | ERASE_6
-            | FORMAT_MEDIUM => {
-                Self::refresh_stats(
-                    &self.drive_stats,
-                    st.media_state.as_ref(),
-                    self.generation,
-                );
+            WRITE_6 | READ_6 | WRITE_FILEMARKS_6 | SPACE_6 | SPACE_16 | ERASE_6 | FORMAT_MEDIUM => {
+                Self::refresh_stats(&self.drive_stats, st.media_state.as_ref(), self.generation);
             }
             _ => {}
         }

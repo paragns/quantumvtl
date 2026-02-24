@@ -28,7 +28,10 @@ pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> 
         partition.records.truncate(pos);
     }
     // Remove truncated records from store
-    if let Err(e) = media_state.store.remove_records_from(partition_idx, pos as u64) {
+    if let Err(e) = media_state
+        .store
+        .remove_records_from(partition_idx, pos as u64)
+    {
         warn!(error = %e, "failed to remove truncated records from store");
     }
 
@@ -36,7 +39,10 @@ pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> 
         let desc = RecordDescriptor::Filemark;
         let record_num = media_state.current_partition().records.len() as u64;
 
-        if let Err(e) = media_state.store.save_record(partition_idx, record_num, &desc) {
+        if let Err(e) = media_state
+            .store
+            .save_record(partition_idx, record_num, &desc)
+        {
             warn!(error = %e, "failed to save filemark record to store");
             return SenseBuilder::medium_error().to_check_condition();
         }

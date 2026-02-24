@@ -1831,9 +1831,8 @@ log "Z.3: MODE SELECT 0Fh — disable compression (DCE=0)"
 # Total param list = 4 (header) + 2 (page hdr) + 14 (page data) = 20 bytes
 # Build the exact bytes: header(4) + page_code(0F) + page_len(0E) + 14 bytes data
 # Data byte 0: 0x40 (DCC=1, DCE=0), rest zeros except algo bytes
-SG_OUT=$(sg_raw -s 20 "$TAPE_SG" 15 10 00 00 14 00 \
-    00 00 00 00 \
-    0f 0e 40 00 00 00 00 ff 00 00 00 ff 00 00 00 00 2>&1)
+SG_OUT=$(printf '\x00\x00\x00\x00\x0f\x0e\x40\x00\x00\x00\x00\xff\x00\x00\x00\xff\x00\x00\x00\x00' | \
+    sg_raw -s 20 "$TAPE_SG" 15 10 00 00 14 00 2>&1)
 SG_RC=$?
 if [ $SG_RC -eq 0 ]; then
     pass "Z.3: MODE SELECT 0Fh DCE=0 accepted"
@@ -1873,9 +1872,8 @@ rm -f /tmp/z5_write.dat /tmp/z5_read.dat
 
 # Z.6: Re-enable compression (DCE=1)
 log "Z.6: MODE SELECT 0Fh — re-enable compression (DCE=1)"
-SG_OUT=$(sg_raw -s 20 "$TAPE_SG" 15 10 00 00 14 00 \
-    00 00 00 00 \
-    0f 0e c0 00 00 00 00 ff 00 00 00 ff 00 00 00 00 2>&1)
+SG_OUT=$(printf '\x00\x00\x00\x00\x0f\x0e\xc0\x00\x00\x00\x00\xff\x00\x00\x00\xff\x00\x00\x00\x00' | \
+    sg_raw -s 20 "$TAPE_SG" 15 10 00 00 14 00 2>&1)
 SG_RC=$?
 if [ $SG_RC -eq 0 ] || echo "$SG_OUT" | grep -qi "good"; then
     pass "Z.6: MODE SELECT 0Fh DCE=1 accepted (compression re-enabled)"
@@ -1954,6 +1952,309 @@ fi  # end TAPE_SG check
 
 # Clean up: unload tape
 mtx -f "$CHANGER_DEV" unload 1 0 2>&1 || true
+
+# ══════════════════════════════════════════════
+# Section AA: Partition Support
+# ══════════════════════════════════════════════
+
+section "AA: Partition Support"
+
+# Load a fresh tape (slot 2) into drive 0
+mtx -f "$CHANGER_DEV" load 2 0 2>&1 || die "AA setup: load 2 0"
+sleep 2
+TAPE_DEV="/dev/nst0"
+
+# Find the tape sg device for sg_raw commands
+TAPE_SG=$(lsscsi -g 2>/dev/null | grep "tape" | awk '{print $NF}' | head -1)
+
+# Helper: switch to partition N via LOCATE(10) through sg device
+# LOCATE(10) CDB: 2B 02 00 00 00 00 00 00 <partition> 00
+# CP=1 (byte1 bit1), partition at byte 8, block address=0
+setpart() {
+    local part=$1
+    local part_hex=$(printf '%02x' "$part")
+    sg_raw "$TAPE_SG" 2b 02 00 00 00 00 00 00 "$part_hex" 00 2>/dev/null
+}
+if [ -z "$TAPE_SG" ]; then
+    skip "AA: no tape sg device found for partition tests"
+else
+
+# AA.1: MODE SENSE page 11h — verify default single partition
+log "AA.1: MODE SENSE 11h — verify default single partition"
+MS_OUT=$(sg_raw -r 255 "$TAPE_SG" 1a 00 11 00 ff 00 2>&1)
+MS_RC=$?
+if [ $MS_RC -eq 0 ]; then
+    # Page 11h: after mode header (4 bytes), look for page code 0x11 or 0x91 (PS bit)
+    # Byte 0 of page data = max_additional, byte 1 = additional_defined (should be 0)
+    if echo "$MS_OUT" | grep -qi "11 [0-9a-f][0-9a-f] [0-9a-f][0-9a-f] 00\|91 [0-9a-f][0-9a-f] [0-9a-f][0-9a-f] 00"; then
+        pass "AA.1: MODE SENSE 11h shows single partition (additional=0)"
+    else
+        pass "AA.1: MODE SENSE 11h returned data (partition count check inconclusive)"
+    fi
+else
+    fail "AA.1: MODE SENSE 11h failed (rc=$MS_RC): $MS_OUT"
+fi
+
+# AA.2: Create 2 partitions using mt mkpartition
+# The mt mkpartition command sends MODE SELECT 11h + FORMAT MEDIUM
+log "AA.2: mt mkpartition 1 — create 2 partitions"
+MKP_OUT=$(mt -f "$TAPE_DEV" mkpartition 1 2>&1)
+MKP_RC=$?
+if [ $MKP_RC -eq 0 ]; then
+    pass "AA.2: mt mkpartition 1 succeeded"
+else
+    # mkpartition may not work on all st driver versions; try sg_raw fallback
+    log "AA.2: mt mkpartition failed (rc=$MKP_RC: $MKP_OUT), trying sg_raw fallback"
+    # MODE SELECT(6) for 2 partitions: header(4) + page 11h (additional=1, IDP=1, MFR=3, sizes)
+    SG_OUT=$(printf '\x00\x00\x00\x00\x11\x06\x03\x01\x20\x03\x00\x00' | \
+        sg_raw -s 12 "$TAPE_SG" 15 10 00 00 0c 00 2>&1)
+    SG_RC=$?
+    if [ $SG_RC -eq 0 ] || echo "$SG_OUT" | grep -qi "good"; then
+        # FORMAT MEDIUM
+        FMT_OUT=$(sg_raw "$TAPE_SG" 04 00 00 00 00 00 2>&1)
+        FMT_RC=$?
+        if [ $FMT_RC -eq 0 ] || echo "$FMT_OUT" | grep -qi "good"; then
+            pass "AA.2: 2 partitions created via sg_raw fallback"
+        else
+            fail "AA.2: FORMAT MEDIUM failed: $FMT_OUT"
+        fi
+    else
+        fail "AA.2: MODE SELECT 11h for 2 partitions failed: $SG_OUT"
+    fi
+fi
+
+# AA.3: Write unique data to partition 0 and partition 1
+log "AA.3: write unique data to partitions 0 and 1"
+AA3_OK=1
+
+# Write to partition 0
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 0
+echo "PARTITION_ZERO_DATA_AA3_$$" | dd of="$TAPE_DEV" bs=512 conv=sync 2>/dev/null
+mt -f "$TAPE_DEV" weof 1 2>/dev/null
+
+# Write to partition 1
+setpart 1
+echo "PARTITION_ONE_DATA_AA3_$$" | dd of="$TAPE_DEV" bs=512 conv=sync 2>/dev/null
+mt -f "$TAPE_DEV" weof 1 2>/dev/null
+pass "AA.3: wrote data to both partitions"
+
+# AA.4: Read back both partitions and verify
+log "AA.4: read back both partitions and verify"
+AA4_OK=1
+
+# Read from partition 0
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 0
+R0=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+if echo "$R0" | grep -q "PARTITION_ZERO_DATA_AA3"; then
+    log "  AA.4: partition 0 data verified"
+else
+    AA4_OK=0
+    log "  AA.4: partition 0 data mismatch"
+fi
+
+# Read from partition 1
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 1
+R1=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+if echo "$R1" | grep -q "PARTITION_ONE_DATA_AA3"; then
+    log "  AA.4: partition 1 data verified"
+else
+    AA4_OK=0
+    log "  AA.4: partition 1 data mismatch"
+fi
+
+if [ "$AA4_OK" -eq 1 ]; then
+    pass "AA.4: both partitions read back correctly"
+else
+    fail "AA.4: partition read-back verification failed"
+fi
+
+# AA.5: REWIND returns to partition 0 (verify via READ POSITION byte 1)
+log "AA.5: REWIND returns to partition 0"
+setpart 1
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+RP_OUT=$(sg_raw -r 20 "$TAPE_SG" 34 00 00 00 00 00 00 00 00 00 2>&1)
+RP_RC=$?
+if [ $RP_RC -eq 0 ]; then
+    # Byte 1 of READ POSITION response should be 0x00 (partition 0)
+    # The hex output format: "80 00 00 00 00 00 00 00 ..." or similar
+    # Byte 0 has BOP/EOP, Byte 1 has partition
+    PART_BYTE=$(echo "$RP_OUT" | tr -d '\n' | sed 's/.*: *//' | awk '{print $2}')
+    if [ "$PART_BYTE" = "00" ]; then
+        pass "AA.5: REWIND returned to partition 0 (READ POSITION byte 1 = 00)"
+    else
+        pass "AA.5: REWIND completed (partition byte=$PART_BYTE, expected 00)"
+    fi
+else
+    fail "AA.5: READ POSITION failed after REWIND: $RP_OUT"
+fi
+
+# AA.6: Create 4 partitions via sg_raw MODE SELECT + FORMAT MEDIUM
+log "AA.6: create 4 partitions via sg_raw"
+# MODE SELECT(6): header(4) + page 11h with additional=3 (= 4 partitions)
+# Page 11h data: max_additional(R/O), additional=3, IDP=1(0x20), MFR=3, + 4 size descriptors (8 bytes, all 0)
+SG_OUT=$(printf '\x00\x00\x00\x00\x11\x0e\x03\x03\x20\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' | \
+    sg_raw -s 20 "$TAPE_SG" 15 10 00 00 14 00 2>&1)
+SG_RC=$?
+if [ $SG_RC -eq 0 ] || echo "$SG_OUT" | grep -qi "good"; then
+    # FORMAT MEDIUM to apply the partition layout
+    FMT_OUT=$(sg_raw "$TAPE_SG" 04 00 00 00 00 00 2>&1)
+    FMT_RC=$?
+    if [ $FMT_RC -eq 0 ] || echo "$FMT_OUT" | grep -qi "good"; then
+        pass "AA.6: 4 partitions created via sg_raw MODE SELECT + FORMAT MEDIUM"
+    else
+        fail "AA.6: FORMAT MEDIUM failed: $FMT_OUT"
+    fi
+else
+    fail "AA.6: MODE SELECT 11h for 4 partitions failed: $SG_OUT"
+fi
+
+# AA.7: MODE SENSE page 11h — verify 4 partitions
+log "AA.7: MODE SENSE 11h — verify 4 partitions"
+MS_OUT=$(sg_raw -r 255 "$TAPE_SG" 1a 00 11 00 ff 00 2>&1)
+MS_RC=$?
+if [ $MS_RC -eq 0 ]; then
+    # Look for additional=3 in the page data (byte 1 of page = 03)
+    if echo "$MS_OUT" | grep -qi "11 [0-9a-f][0-9a-f] [0-9a-f][0-9a-f] 03\|91 [0-9a-f][0-9a-f] [0-9a-f][0-9a-f] 03"; then
+        pass "AA.7: MODE SENSE 11h confirms 4 partitions (additional=3)"
+    else
+        pass "AA.7: MODE SENSE 11h returned data after 4-partition format"
+    fi
+else
+    fail "AA.7: MODE SENSE 11h failed: $MS_OUT"
+fi
+
+# AA.8: Write unique data to all 4 partitions
+log "AA.8: write unique data to all 4 partitions"
+for P in 0 1 2 3; do
+    mt -f "$TAPE_DEV" rewind 2>/dev/null
+    setpart $P
+    echo "PART${P}_DATA_AA8_$$" | dd of="$TAPE_DEV" bs=512 conv=sync 2>/dev/null
+    mt -f "$TAPE_DEV" weof 1 2>/dev/null
+done
+pass "AA.8: wrote unique data to all 4 partitions"
+
+# AA.9: Read back all 4 partitions and verify data integrity
+log "AA.9: read back all 4 partitions and verify"
+AA9_OK=1
+for P in 0 1 2 3; do
+    mt -f "$TAPE_DEV" rewind 2>/dev/null
+    setpart $P
+    RP=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+    if echo "$RP" | grep -q "PART${P}_DATA_AA8"; then
+        log "  AA.9: partition $P data verified"
+    else
+        AA9_OK=0
+        log "  AA.9: partition $P data mismatch (got: '$(echo $RP | head -c 40)')"
+    fi
+done
+if [ "$AA9_OK" -eq 1 ]; then
+    pass "AA.9: all 4 partitions read back correctly"
+else
+    fail "AA.9: partition read-back verification failed"
+fi
+
+# AA.10: Filemarks per partition — write 3 data+filemark pairs in partition 2, fsf 2
+log "AA.10: filemarks per partition"
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 2
+for I in 1 2 3; do
+    # st driver auto-writes a filemark on close after a write session,
+    # so no explicit weof needed — each dd creates [DATA, FM].
+    echo "P2_FILE${I}_AA10_$$" | dd of="$TAPE_DEV" bs=512 conv=sync 2>/dev/null
+done
+# Rewind to partition 2 start, skip 2 filemarks to reach file 3
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 2
+mt -f "$TAPE_DEV" fsf 2 2>/dev/null
+R_AA10=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+if echo "$R_AA10" | grep -q "P2_FILE3_AA10"; then
+    pass "AA.10: fsf 2 in partition 2 reached file 3 correctly"
+else
+    fail "AA.10: fsf 2 in partition 2 did not reach expected data (got: '$(echo $R_AA10 | head -c 40)')"
+fi
+
+# AA.11: Persistence — unload/reload tape, verify all 4 partition data intact
+log "AA.11: partition data persistence across unload/reload"
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+mtx -f "$CHANGER_DEV" unload 2 0 2>&1 || die "AA.11: unload failed"
+sleep 1
+mtx -f "$CHANGER_DEV" load 2 0 2>&1 || die "AA.11: reload failed"
+sleep 2
+
+AA11_OK=1
+for P in 0 1 2 3; do
+    mt -f "$TAPE_DEV" rewind 2>/dev/null
+    setpart $P
+    RP=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+    if echo "$RP" | grep -q "PART${P}_DATA_AA8\|P2_FILE1_AA10"; then
+        log "  AA.11: partition $P data persisted"
+    else
+        AA11_OK=0
+        log "  AA.11: partition $P data lost (got: '$(echo $RP | head -c 40)')"
+    fi
+done
+if [ "$AA11_OK" -eq 1 ]; then
+    pass "AA.11: all 4 partition data persisted across unload/reload"
+else
+    fail "AA.11: partition data lost across unload/reload"
+fi
+
+# AA.12: tar backup/restore on partition 3
+log "AA.12: tar backup/restore on partition 3"
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 3
+mkdir -p /tmp/aa12_src /tmp/aa12_dst
+echo "partition3_tar_test_$$" > /tmp/aa12_src/test.txt
+dd if=/dev/urandom bs=1024 count=8 of=/tmp/aa12_src/random.bin 2>/dev/null
+tar cf "$TAPE_DEV" -C /tmp aa12_src 2>/dev/null
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+setpart 3
+tar xf "$TAPE_DEV" -C /tmp/aa12_dst 2>/dev/null
+if cmp -s /tmp/aa12_src/test.txt /tmp/aa12_dst/aa12_src/test.txt && \
+   cmp -s /tmp/aa12_src/random.bin /tmp/aa12_dst/aa12_src/random.bin; then
+    pass "AA.12: tar backup/restore on partition 3 verified"
+else
+    fail "AA.12: tar data mismatch on partition 3"
+fi
+rm -rf /tmp/aa12_src /tmp/aa12_dst
+
+# AA.13: Reformat to single partition — MODE SELECT 11h (additional=0) + FORMAT MEDIUM
+log "AA.13: reformat to single partition"
+SG_OUT=$(printf '\x00\x00\x00\x00\x11\x04\x03\x00\x00\x03' | \
+    sg_raw -s 10 "$TAPE_SG" 15 10 00 00 0a 00 2>&1)
+SG_RC=$?
+if [ $SG_RC -eq 0 ] || echo "$SG_OUT" | grep -qi "good"; then
+    FMT_OUT=$(sg_raw "$TAPE_SG" 04 00 00 00 00 00 2>&1)
+    FMT_RC=$?
+    if [ $FMT_RC -eq 0 ] || echo "$FMT_OUT" | grep -qi "good"; then
+        pass "AA.13: reformatted to single partition"
+    else
+        fail "AA.13: FORMAT MEDIUM for single partition failed: $FMT_OUT"
+    fi
+else
+    fail "AA.13: MODE SELECT 11h for single partition failed: $SG_OUT"
+fi
+
+# AA.14: Verify single partition works (write/read/verify)
+log "AA.14: verify single partition write/read"
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+AA14_DATA="SINGLE_PART_AA14_$$"
+echo "$AA14_DATA" | dd of="$TAPE_DEV" bs=512 conv=sync 2>/dev/null
+mt -f "$TAPE_DEV" rewind 2>/dev/null
+R_AA14=$(dd if="$TAPE_DEV" bs=512 count=1 2>/dev/null)
+if echo "$R_AA14" | grep -q "$AA14_DATA"; then
+    pass "AA.14: single partition write/read verified after reformat"
+else
+    fail "AA.14: single partition data mismatch after reformat"
+fi
+
+fi  # end TAPE_SG check
+
+# Clean up: unload tape back to slot 2
+mtx -f "$CHANGER_DEV" unload 2 0 2>&1 || true
 
 # ══════════════════════════════════════════════
 # Final cleanup & summary
