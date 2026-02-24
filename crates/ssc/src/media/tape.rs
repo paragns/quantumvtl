@@ -95,6 +95,12 @@ impl TapePartition {
         self.filemark_positions.len() as u64
     }
 
+    /// Native bytes written before the given block position.
+    pub fn bytes_before_position(&self, block_number: u64) -> u64 {
+        let n = (block_number as usize).min(self.records.len());
+        self.records[..n].iter().map(|r| r.byte_len() as u64).sum()
+    }
+
     /// Rebuild the filemark position index.
     pub fn rebuild_filemark_index(&mut self) {
         self.filemark_positions = self

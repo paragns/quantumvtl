@@ -163,9 +163,12 @@ impl TapeDrive {
         let st = self.state.lock().unwrap();
         match &st.media_state {
             Some(ms) => {
-                let phys = position::logical_to_physical(
+                let bytes_before = ms.current_partition().bytes_before_position(
                     ms.position.block_number,
-                    ms.current_partition().object_count(),
+                );
+                let phys = position::logical_to_physical(
+                    bytes_before,
+                    ms.media.geometry.native_capacity_bytes,
                     ms.media.geometry,
                 );
                 DriveSnapshot {
