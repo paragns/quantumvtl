@@ -17,6 +17,8 @@ use tracing::info;
 use utoipa::OpenApi;
 
 use iscsi_target::SessionRegistry;
+use iscsi_target::cdb_decode::{decode_cdb, decode_response, CdbBreakdown, ResponseBreakdown};
+use iscsi_target::scsi_log::{DeviceType, ScsiCommandLog, scsi_status_name};
 use smc::{ElementType, MediaChanger};
 use ssc::TapeDrive;
 
@@ -34,6 +36,8 @@ pub struct AdminState {
     pub changer: Arc<MediaChanger>,
     pub drives: Vec<Arc<TapeDrive>>,
     pub session_registry: Arc<SessionRegistry>,
+    pub changer_log: Arc<ScsiCommandLog>,
+    pub drive_logs: Vec<Arc<ScsiCommandLog>>,
 }
 
 #[derive(Embed)]
@@ -193,6 +197,53 @@ struct SessionResponse {
     peer_addr: String,
     connected_since: String,
     active_commands: u32,
+}
+
+// --- SCSI Log API Types ---
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ScsiLogSummaryEntry {
+    seq: u64,
+    timestamp: String,
+    duration_us: u64,
+    opcode: u8,
+    opcode_name: String,
+    status: u8,
+    status_name: String,
+    data_out_len: usize,
+    data_in_len: usize,
+    has_sense: bool,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ScsiLogResponse {
+    device_type: String,
+    device_id: usize,
+    entries: Vec<ScsiLogSummaryEntry>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ScsiCommandDetailResponse {
+    seq: u64,
+    timestamp: String,
+    duration_us: u64,
+    opcode: u8,
+    opcode_name: String,
+    cdb_hex: String,
+    data_out_hex: Option<String>,
+    data_out_len: usize,
+    status: u8,
+    status_name: String,
+    data_in_hex: Option<String>,
+    data_in_len: usize,
+    sense_hex: String,
+    cdb_breakdown: CdbBreakdown,
+    response_breakdown: ResponseBreakdown,
+}
+
+#[derive(Deserialize)]
+struct ScsiLogQuery {
+    limit: Option<usize>,
 }
 
 // --- Handlers ---
@@ -584,6 +635,136 @@ async fn vtl_sessions(State(state): State<AdminState>) -> Json<Vec<SessionRespon
     Json(sessions)
 }
 
+// --- SCSI Log Handlers ---
+
+fn log_to_summary(entry: &iscsi_target::scsi_log::ScsiLogEntry) -> ScsiLogSummaryEntry {
+    ScsiLogSummaryEntry {
+        seq: entry.seq,
+        timestamp: entry.timestamp.clone(),
+        duration_us: entry.duration_us,
+        opcode: entry.opcode,
+        opcode_name: entry.opcode_name.clone(),
+        status: entry.status,
+        status_name: scsi_status_name(entry.status).to_string(),
+        data_out_len: entry.data_out_len,
+        data_in_len: entry.data_in_len,
+        has_sense: !entry.sense.is_empty(),
+    }
+}
+
+fn hex_string(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/scsi-log/changer",
+    tag = "SCSI Log",
+    params(
+        ("limit" = Option<usize>, Query, description = "Max entries to return (default 20, max 20)")
+    ),
+    responses(
+        (status = 200, description = "Changer SCSI command log", body = ScsiLogResponse)
+    )
+)]
+async fn scsi_log_changer(
+    State(state): State<AdminState>,
+    axum::extract::Query(q): axum::extract::Query<ScsiLogQuery>,
+) -> Json<ScsiLogResponse> {
+    let limit = q.limit.unwrap_or(20).min(20);
+    let entries = state.changer_log.last_n(limit);
+    Json(ScsiLogResponse {
+        device_type: "changer".into(),
+        device_id: 0,
+        entries: entries.iter().map(log_to_summary).collect(),
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/scsi-log/drive/{id}",
+    tag = "SCSI Log",
+    params(
+        ("id" = usize, Path, description = "Drive index"),
+        ("limit" = Option<usize>, Query, description = "Max entries to return (default 20, max 20)")
+    ),
+    responses(
+        (status = 200, description = "Drive SCSI command log", body = ScsiLogResponse),
+        (status = 404, description = "Drive not found")
+    )
+)]
+async fn scsi_log_drive(
+    State(state): State<AdminState>,
+    axum::extract::Path(id): axum::extract::Path<usize>,
+    axum::extract::Query(q): axum::extract::Query<ScsiLogQuery>,
+) -> Result<Json<ScsiLogResponse>, StatusCode> {
+    let log = state.drive_logs.get(id).ok_or(StatusCode::NOT_FOUND)?;
+    let limit = q.limit.unwrap_or(20).min(20);
+    let entries = log.last_n(limit);
+    Ok(Json(ScsiLogResponse {
+        device_type: "drive".into(),
+        device_id: id,
+        entries: entries.iter().map(log_to_summary).collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct ScsiEntryPath {
+    device_type: String,
+    device_id: usize,
+    seq: u64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/scsi-log/entry/{device_type}/{device_id}/{seq}",
+    tag = "SCSI Log",
+    params(
+        ("device_type" = String, Path, description = "\"changer\" or \"drive\""),
+        ("device_id" = usize, Path, description = "Device index (0 for changer)"),
+        ("seq" = u64, Path, description = "Sequence number")
+    ),
+    responses(
+        (status = 200, description = "Full command detail with CDB/response breakdown", body = ScsiCommandDetailResponse),
+        (status = 404, description = "Entry not found")
+    )
+)]
+async fn scsi_log_entry(
+    State(state): State<AdminState>,
+    axum::extract::Path(path): axum::extract::Path<ScsiEntryPath>,
+) -> Result<Json<ScsiCommandDetailResponse>, StatusCode> {
+    let (log, dt) = match path.device_type.as_str() {
+        "changer" => (state.changer_log.clone(), DeviceType::MediaChanger),
+        "drive" => {
+            let l = state.drive_logs.get(path.device_id).ok_or(StatusCode::NOT_FOUND)?;
+            (l.clone(), DeviceType::TapeDrive)
+        }
+        _ => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let entry = log.get_by_seq(path.seq).ok_or(StatusCode::NOT_FOUND)?;
+    let cdb_breakdown = decode_cdb(&entry.cdb, dt);
+    let response_breakdown = decode_response(&entry);
+
+    Ok(Json(ScsiCommandDetailResponse {
+        seq: entry.seq,
+        timestamp: entry.timestamp.clone(),
+        duration_us: entry.duration_us,
+        opcode: entry.opcode,
+        opcode_name: entry.opcode_name.clone(),
+        cdb_hex: hex_string(&entry.cdb),
+        data_out_hex: entry.data_out.as_ref().map(|d| hex_string(d)),
+        data_out_len: entry.data_out_len,
+        status: entry.status,
+        status_name: scsi_status_name(entry.status).to_string(),
+        data_in_hex: entry.data_in.as_ref().map(|d| hex_string(d)),
+        data_in_len: entry.data_in_len,
+        sense_hex: hex_string(&entry.sense),
+        cdb_breakdown,
+        response_breakdown,
+    }))
+}
+
 // --- OpenAPI ---
 
 #[derive(OpenApi)]
@@ -604,6 +785,9 @@ async fn vtl_sessions(State(state): State<AdminState>) -> Json<Vec<SessionRespon
         vtl_drive_detail,
         vtl_sessions,
         config_show,
+        scsi_log_changer,
+        scsi_log_drive,
+        scsi_log_entry,
     ),
     components(schemas(
         HealthResponse,
@@ -619,12 +803,20 @@ async fn vtl_sessions(State(state): State<AdminState>) -> Json<Vec<SessionRespon
         DriveDetailResponse,
         SessionResponse,
         ConfigEntry,
+        ScsiLogSummaryEntry,
+        ScsiLogResponse,
+        ScsiCommandDetailResponse,
+        iscsi_target::cdb_decode::CdbBreakdown,
+        iscsi_target::cdb_decode::CdbField,
+        iscsi_target::cdb_decode::ResponseBreakdown,
+        iscsi_target::cdb_decode::SenseBreakdown,
     )),
     tags(
         (name = "System", description = "Health and system status"),
         (name = "Auth", description = "Authentication"),
         (name = "VTL", description = "Virtual tape library operations"),
         (name = "Config", description = "Configuration store"),
+        (name = "SCSI Log", description = "SCSI command/response tracing"),
     )
 )]
 struct ApiDoc;
@@ -744,6 +936,9 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/vtl/changer", get(vtl_changer))
         .route("/api/vtl/sessions", get(vtl_sessions))
         .route("/api/config", get(config_show))
+        .route("/api/vtl/scsi-log/changer", get(scsi_log_changer))
+        .route("/api/vtl/scsi-log/drive/{id}", get(scsi_log_drive))
+        .route("/api/vtl/scsi-log/entry/{device_type}/{device_id}/{seq}", get(scsi_log_entry))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

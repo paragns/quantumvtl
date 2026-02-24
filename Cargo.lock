@@ -870,6 +870,7 @@ dependencies = [
  "serde",
  "tokio",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]

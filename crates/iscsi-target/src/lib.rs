@@ -1,5 +1,7 @@
+pub mod cdb_decode;
 pub mod login;
 pub mod pdu;
+pub mod scsi_log;
 pub mod session;
 pub mod target;
 

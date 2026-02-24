@@ -6,6 +6,8 @@ import SscView from './views/SscView.vue'
 import DriveDetail from './views/DriveDetail.vue'
 import InitiatorsView from './views/InitiatorsView.vue'
 import ApiDocs from './views/ApiDocs.vue'
+import DeviceDetail from './views/DeviceDetail.vue'
+import CommandDetail from './views/CommandDetail.vue'
 import { checkTokenValid } from './api'
 
 const routes = [
@@ -22,6 +24,10 @@ const routes = [
     ],
   },
   { path: '/api-docs', component: ApiDocs, meta: { public: true } },
+  { path: '/device/changer', component: DeviceDetail },
+  { path: '/device/drive/:id', component: DeviceDetail },
+  { path: '/device/changer/cmd/:seq', component: CommandDetail },
+  { path: '/device/drive/:id/cmd/:seq', component: CommandDetail },
 ]
 
 export const router = createRouter({

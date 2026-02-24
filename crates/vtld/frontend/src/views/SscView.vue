@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { apiFetch } from '../api'
+import { apiFetch, fetchScsiLog, type ScsiLogSummary } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
+import ScsiLogLine from '../components/ScsiLogLine.vue'
 import type { DriveSummary } from '../types'
 
 const drives = ref<DriveSummary[]>([])
+const driveLogs = ref<Map<number, ScsiLogSummary[]>>(new Map())
 const error = ref('')
 
 async function fetchData() {
@@ -18,6 +20,10 @@ async function fetchData() {
     }
   } catch {
     error.value = 'Failed to fetch drive data'
+  }
+  for (const d of drives.value) {
+    const dl = await fetchScsiLog('drive', d.id, 4)
+    if (dl) driveLogs.value.set(d.id, dl.entries)
   }
 }
 
@@ -48,6 +54,24 @@ useWebSocket(fetchData)
         <div v-else class="drive-empty">Empty</div>
       </router-link>
     </div>
+
+    <!-- Per-Drive SCSI Activity -->
+    <section class="card" v-if="drives.length > 0">
+      <h3>SCSI Activity</h3>
+      <div v-for="d in drives" :key="d.id" class="drive-log-section">
+        <h4><router-link :to="`/device/drive/${d.id}`" class="card-title-link">Drive {{ d.id }}</router-link></h4>
+        <div v-if="(driveLogs.get(d.id) ?? []).length > 0">
+          <ScsiLogLine
+            v-for="e in driveLogs.get(d.id)"
+            :key="e.seq"
+            :entry="e"
+            device-type="drive"
+            :device-id="d.id"
+          />
+        </div>
+        <p v-else class="no-activity">No recent activity</p>
+      </div>
+    </section>
 
     <p v-if="!drives.length && !error" class="empty-state">No drives configured</p>
   </div>
@@ -81,6 +105,14 @@ useWebSocket(fetchData)
 .drive-empty { font-size: 0.85rem; color: #bbb; font-style: italic; }
 
 .empty-state { color: #888; text-align: center; margin-top: 3rem; }
+.card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; margin-top: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.card h3 { margin-bottom: 0.75rem; font-size: 1rem; color: #1a1a2e; }
+.card-title-link { color: #1a1a2e; text-decoration: none; }
+.card-title-link:hover { text-decoration: underline; }
+.no-activity { color: #bbb; font-style: italic; font-size: 0.85rem; }
+.drive-log-section { margin-bottom: 0.75rem; }
+.drive-log-section:last-child { margin-bottom: 0; }
+.drive-log-section h4 { font-size: 0.85rem; margin-bottom: 0.3rem; }
 
 @media (max-width: 800px) {
   .drive-card { max-width: none; }

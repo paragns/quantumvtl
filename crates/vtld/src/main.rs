@@ -5,6 +5,7 @@ use tokio::sync::{Notify, broadcast};
 use tracing::{error, info};
 
 use iscsi_target::SessionRegistry;
+use iscsi_target::scsi_log::{DeviceType, TracedDevice};
 use iscsi_target::target::{Target, TargetServer};
 use smc::MediaChanger;
 use ssc::TapeDrive;
@@ -99,6 +100,28 @@ async fn main() -> anyhow::Result<()> {
 
     let session_registry = Arc::new(SessionRegistry::new());
 
+    // Wrap devices with tracing
+    let (traced_changer, changer_log) = TracedDevice::new(
+        changer.clone(),
+        DeviceType::MediaChanger,
+        20,
+        Some(ws_tx.clone()),
+    );
+    let traced_changer = Arc::new(traced_changer);
+
+    let mut drive_logs = Vec::new();
+    let mut traced_drives: Vec<Arc<TracedDevice>> = Vec::new();
+    for drive in &drive_arcs {
+        let (traced, log) = TracedDevice::new(
+            drive.clone(),
+            DeviceType::TapeDrive,
+            20,
+            Some(ws_tx.clone()),
+        );
+        drive_logs.push(log);
+        traced_drives.push(Arc::new(traced));
+    }
+
     let admin_state = AdminState {
         store,
         users: config.users,
@@ -108,13 +131,15 @@ async fn main() -> anyhow::Result<()> {
         changer: changer.clone(),
         drives: drive_arcs.clone(),
         session_registry: session_registry.clone(),
+        changer_log,
+        drive_logs,
     };
 
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());
-    iscsi_target.add_lun(0, changer);
+    iscsi_target.add_lun(0, traced_changer);
 
-    for (i, drive) in drive_arcs.into_iter().enumerate() {
-        iscsi_target.add_lun((i + 1) as u64, drive);
+    for (i, traced) in traced_drives.into_iter().enumerate() {
+        iscsi_target.add_lun((i + 1) as u64, traced);
     }
 
     let iscsi_addr = format!("{}:{}", config.listen.host, config.iscsi.port);

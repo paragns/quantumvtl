@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { apiFetch } from '../api'
+import { apiFetch, fetchScsiLog, type ScsiLogSummary } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
+import ScsiLogLine from '../components/ScsiLogLine.vue'
 import type { ChangerDetail } from '../types'
 
 const changer = ref<ChangerDetail | null>(null)
+const changerLog = ref<ScsiLogSummary[]>([])
 const error = ref('')
 
 async function fetchData() {
@@ -19,6 +21,8 @@ async function fetchData() {
   } catch {
     error.value = 'Failed to fetch changer data'
   }
+  const cl = await fetchScsiLog('changer', 0, 4)
+  if (cl) changerLog.value = cl.entries
 }
 
 useWebSocket(fetchData)
@@ -87,6 +91,21 @@ useWebSocket(fetchData)
         </div>
       </section>
 
+      <!-- SCSI Activity -->
+      <section class="card">
+        <h3><router-link to="/device/changer" class="card-title-link">SCSI Activity</router-link></h3>
+        <div v-if="changerLog.length > 0">
+          <ScsiLogLine
+            v-for="e in changerLog"
+            :key="e.seq"
+            :entry="e"
+            device-type="changer"
+            :device-id="0"
+          />
+        </div>
+        <p v-else class="no-activity">No recent activity</p>
+      </section>
+
       <!-- Elements Table -->
       <section class="card">
         <h3>Elements ({{ changer.elements.length }})</h3>
@@ -153,4 +172,7 @@ td { padding: 0.35rem 0.6rem; border-bottom: 1px solid #f0f0f0; }
 .mono { font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace; font-size: 0.82rem; }
 .row-full { background: #f0faf4; }
 .row-except { background: #fff8e1; }
+.card-title-link { color: #1a1a2e; text-decoration: none; }
+.card-title-link:hover { text-decoration: underline; }
+.no-activity { color: #bbb; font-style: italic; font-size: 0.85rem; }
 </style>
