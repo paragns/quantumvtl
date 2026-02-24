@@ -1,8 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Login from './views/Login.vue'
 import TabLayout from './views/TabLayout.vue'
-import SmcView from './views/SmcView.vue'
-import SscView from './views/SscView.vue'
+import DashboardView from './views/DashboardView.vue'
 import DriveDetail from './views/DriveDetail.vue'
 import InitiatorsView from './views/InitiatorsView.vue'
 import ApiDocs from './views/ApiDocs.vue'
@@ -16,10 +15,9 @@ const routes = [
   {
     path: '/',
     component: TabLayout,
-    redirect: '/smc',
+    redirect: '/dashboard',
     children: [
-      { path: 'smc', name: 'smc', component: SmcView },
-      { path: 'ssc', name: 'ssc', component: SscView },
+      { path: 'dashboard', name: 'dashboard', component: DashboardView },
       { path: 'ssc/drive/:id', name: 'drive-detail', component: DriveDetail, props: true },
       { path: 'media/:barcode', name: 'media-detail', component: MediaDetail, props: true },
       { path: 'initiators', name: 'initiators', component: InitiatorsView },
@@ -30,6 +28,9 @@ const routes = [
   { path: '/device/drive/:id', component: DeviceDetail },
   { path: '/device/changer/cmd/:seq', component: CommandDetail },
   { path: '/device/drive/:id/cmd/:seq', component: CommandDetail },
+  // Legacy redirects
+  { path: '/smc', redirect: '/dashboard' },
+  { path: '/ssc', redirect: '/dashboard' },
 ]
 
 export const router = createRouter({

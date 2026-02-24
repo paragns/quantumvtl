@@ -9,13 +9,12 @@ const showNav = computed(() => route.path !== '/login')
 
 const isTabRoute = computed(() => {
   const name = route.name as string | undefined
-  return name === 'smc' || name === 'ssc' || name === 'drive-detail' || name === 'initiators'
+  return name === 'dashboard' || name === 'drive-detail' || name === 'media-detail' || name === 'initiators'
 })
 
 const activeTab = computed(() => {
   const name = route.name as string
-  if (name === 'drive-detail' || name === 'ssc') return 'ssc'
-  if (name === 'smc') return 'smc'
+  if (name === 'dashboard' || name === 'drive-detail' || name === 'media-detail') return 'dashboard'
   if (name === 'initiators') return 'initiators'
   return ''
 })
@@ -32,8 +31,7 @@ function logout() {
       <nav>
         <router-link to="/" class="brand">QuantumVTL</router-link>
         <template v-if="isTabRoute">
-          <router-link to="/smc" class="tab" :class="{ active: activeTab === 'smc' }">Changer</router-link>
-          <router-link to="/ssc" class="tab" :class="{ active: activeTab === 'ssc' }">Drives</router-link>
+          <router-link to="/dashboard" class="tab" :class="{ active: activeTab === 'dashboard' }">Dashboard</router-link>
           <router-link to="/initiators" class="tab" :class="{ active: activeTab === 'initiators' }">Initiators</router-link>
         </template>
         <span class="spacer"></span>
@@ -64,5 +62,5 @@ nav .tab.active { color: #fff; border-bottom-color: #fff; }
 nav .right-link { color: #ccc; text-decoration: none; font-size: 0.9rem; margin-left: 1rem; }
 nav .right-link:hover { color: #fff; }
 .spacer { flex: 1; }
-main { flex: 1; padding: 1.5rem; max-width: 1200px; margin: 0 auto; width: 100%; }
+main { flex: 1; padding: 1.5rem; max-width: 1400px; margin: 0 auto; width: 100%; }
 </style>
