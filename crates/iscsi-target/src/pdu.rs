@@ -208,9 +208,13 @@ impl Pdu {
         self.bhs[36..40].copy_from_slice(&sn.to_be_bytes());
     }
 
-    /// DataSN (bytes 36-39) — in Data-Out PDUs.
+    /// DataSN (bytes 36-39) — in Data-Out/Data-In PDUs.
     pub fn data_sn(&self) -> u32 {
         u32::from_be_bytes(self.bhs[36..40].try_into().unwrap())
+    }
+
+    pub fn set_data_sn(&mut self, sn: u32) {
+        self.bhs[36..40].copy_from_slice(&sn.to_be_bytes());
     }
 
     /// Read a PDU from an async reader.
@@ -437,4 +441,130 @@ pub fn build_text_response(
     pdu.set_max_cmd_sn(max_cmd_sn);
     pdu.data = data;
     pdu
+}
+
+/// Build a sequence of SCSI Data-In PDUs, fragmenting data to respect
+/// the initiator's `MaxRecvDataSegmentLength`.
+///
+/// - Fast path: if data fits in one PDU, delegates to [`build_data_in`].
+/// - Otherwise: chunks data into `max_recv_data_segment_length`-sized pieces.
+///   Intermediate PDUs have F=0, S=0. The final PDU has F=1, S=1 with status
+///   piggybacked and `StatSN` set.
+#[allow(clippy::too_many_arguments)]
+pub fn build_data_in_sequence(
+    itt: u32,
+    stat_sn: u32,
+    exp_cmd_sn: u32,
+    max_cmd_sn: u32,
+    scsi_status: u8,
+    data: Vec<u8>,
+    max_recv_data_segment_length: usize,
+) -> Vec<Pdu> {
+    // Fast path: fits in a single PDU
+    if data.len() <= max_recv_data_segment_length {
+        return vec![build_data_in(itt, stat_sn, exp_cmd_sn, max_cmd_sn, scsi_status, data)];
+    }
+
+    let mut pdus = Vec::new();
+    let chunks: Vec<&[u8]> = data.chunks(max_recv_data_segment_length).collect();
+    let last_idx = chunks.len() - 1;
+
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let mut pdu = Pdu::new();
+        pdu.set_opcode(OPCODE_SCSI_DATA_IN);
+        pdu.set_itt(itt);
+        pdu.set_ttt(0xFFFFFFFF);
+        pdu.set_exp_cmd_sn(exp_cmd_sn);
+        pdu.set_max_cmd_sn(max_cmd_sn);
+        pdu.set_data_sn(i as u32);
+        pdu.set_buffer_offset((i * max_recv_data_segment_length) as u32);
+        pdu.set_data_segment_length(chunk.len());
+        pdu.data = chunk.to_vec();
+
+        if i == last_idx {
+            // Final PDU: F=1, S=1, status piggybacked
+            pdu.set_flags(0x81);
+            pdu.bhs[3] = scsi_status;
+            pdu.set_stat_sn(stat_sn);
+        } else {
+            // Intermediate PDU: F=0, S=0, no StatSN
+            pdu.set_flags(0x00);
+        }
+
+        pdus.push(pdu);
+    }
+
+    pdus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_data_in_sequence_single_pdu() {
+        let data = vec![0xAB; 100];
+        let pdus = build_data_in_sequence(1, 10, 5, 37, 0x00, data.clone(), 8192);
+        assert_eq!(pdus.len(), 1);
+        assert_eq!(pdus[0].opcode(), OPCODE_SCSI_DATA_IN);
+        assert_eq!(pdus[0].flags(), 0x81); // F=1, S=1
+        assert_eq!(pdus[0].data, data);
+        assert_eq!(pdus[0].itt(), 1);
+        assert_eq!(pdus[0].data_sn(), 0); // single PDU via build_data_in doesn't set DataSN
+    }
+
+    #[test]
+    fn test_data_in_sequence_multi_pdu() {
+        let data = vec![0xCD; 1000];
+        let max_seg = 400;
+        let pdus = build_data_in_sequence(42, 99, 5, 37, 0x00, data.clone(), max_seg);
+        // 1000 / 400 = 2 full + 1 partial = 3 PDUs
+        assert_eq!(pdus.len(), 3);
+
+        // First PDU: F=0, S=0
+        assert_eq!(pdus[0].flags(), 0x00);
+        assert_eq!(pdus[0].data_sn(), 0);
+        assert_eq!(pdus[0].buffer_offset(), 0);
+        assert_eq!(pdus[0].data.len(), 400);
+
+        // Second PDU: F=0, S=0
+        assert_eq!(pdus[1].flags(), 0x00);
+        assert_eq!(pdus[1].data_sn(), 1);
+        assert_eq!(pdus[1].buffer_offset(), 400);
+        assert_eq!(pdus[1].data.len(), 400);
+
+        // Third (final) PDU: F=1, S=1
+        assert_eq!(pdus[2].flags(), 0x81);
+        assert_eq!(pdus[2].data_sn(), 2);
+        assert_eq!(pdus[2].buffer_offset(), 800);
+        assert_eq!(pdus[2].data.len(), 200);
+        assert_eq!(pdus[2].bhs[3], 0x00); // status
+
+        // All PDUs have correct ITT
+        for pdu in &pdus {
+            assert_eq!(pdu.itt(), 42);
+        }
+
+        // Reassemble data
+        let mut reassembled = vec![0u8; 0];
+        for pdu in &pdus {
+            reassembled.extend_from_slice(&pdu.data);
+        }
+        assert_eq!(reassembled, data);
+    }
+
+    #[test]
+    fn test_data_in_sequence_exact_boundary() {
+        let data = vec![0xEF; 800];
+        let max_seg = 400;
+        let pdus = build_data_in_sequence(1, 10, 5, 37, 0x02, data.clone(), max_seg);
+        assert_eq!(pdus.len(), 2);
+
+        assert_eq!(pdus[0].flags(), 0x00);
+        assert_eq!(pdus[0].data.len(), 400);
+
+        assert_eq!(pdus[1].flags(), 0x81);
+        assert_eq!(pdus[1].data.len(), 400);
+        assert_eq!(pdus[1].bhs[3], 0x02); // CHECK CONDITION
+    }
 }

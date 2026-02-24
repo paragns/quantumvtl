@@ -104,7 +104,6 @@ impl TapeStore {
         let length = data.len() as u32;
         self.data_file.seek(SeekFrom::End(0))?;
         self.data_file.write_all(data)?;
-        self.data_file.flush()?;
         self.data_len += length as u64;
         Ok((offset, length))
     }

@@ -38,6 +38,8 @@ pub struct LoginNegotiator {
     pub initial_r2t: bool,
     /// Negotiated FirstBurstLength in bytes.
     pub first_burst_length: usize,
+    /// Initiator's MaxRecvDataSegmentLength (max data per PDU we can send).
+    pub initiator_max_recv_data_segment_length: usize,
     next_tsih: u16,
 }
 
@@ -49,6 +51,7 @@ impl LoginNegotiator {
             initiator_name: None,
             initial_r2t: true,
             first_burst_length: 65536,
+            initiator_max_recv_data_segment_length: 8192,
             next_tsih: 1,
         }
     }
@@ -168,6 +171,7 @@ impl LoginNegotiator {
         // We (target) accept No, so the result equals the initiator's proposal.
         let mut initiator_initial_r2t = true;
         let mut initiator_first_burst_length: usize = 65536;
+        let mut initiator_max_recv: usize = 8192;
         for (k, v) in &kv {
             match k.as_str() {
                 "InitialR2T" => {
@@ -176,6 +180,11 @@ impl LoginNegotiator {
                 "FirstBurstLength" => {
                     if let Ok(val) = v.parse::<usize>() {
                         initiator_first_burst_length = val;
+                    }
+                }
+                "MaxRecvDataSegmentLength" => {
+                    if let Ok(val) = v.parse::<usize>() {
+                        initiator_max_recv = val;
                     }
                 }
                 _ => {}
@@ -189,6 +198,7 @@ impl LoginNegotiator {
 
         self.initial_r2t = negotiated_initial_r2t;
         self.first_burst_length = negotiated_first_burst;
+        self.initiator_max_recv_data_segment_length = initiator_max_recv;
 
         let initial_r2t_str = if negotiated_initial_r2t { "Yes" } else { "No" };
         let first_burst_str = negotiated_first_burst.to_string();
