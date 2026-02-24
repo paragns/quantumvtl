@@ -193,3 +193,29 @@ export async function fetchSessionScsiLogEntry(
   } catch { /* ignore */ }
   return null
 }
+
+// --- Simulation Speed ---
+
+export interface SimulationSpeedResponse {
+  speed_factor: number
+  label: string
+}
+
+export async function fetchSimulationSpeed(): Promise<SimulationSpeedResponse | null> {
+  try {
+    const resp = await apiFetch('/api/vtl/simulation-speed')
+    if (resp.ok) return await resp.json()
+  } catch { /* ignore */ }
+  return null
+}
+
+export async function setSimulationSpeed(factor: number): Promise<SimulationSpeedResponse | null> {
+  try {
+    const resp = await apiFetch('/api/vtl/simulation-speed', {
+      method: 'POST',
+      body: JSON.stringify({ speed_factor: factor }),
+    })
+    if (resp.ok) return await resp.json()
+  } catch { /* ignore */ }
+  return null
+}

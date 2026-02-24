@@ -4,13 +4,14 @@ use rand::Rng;
 use tokio::sync::{broadcast, Notify};
 use tracing::{error, info};
 
+use iscsi_target::SimulationClock;
 use iscsi_target::scsi_log::{DeviceType, TracedDevice};
 use iscsi_target::target::{Target, TargetServer};
 use iscsi_target::SessionRegistry;
 use smc::MediaChanger;
-use ssc::media::geometry::LtoGeneration;
+use smc::timing::RobotTimingModel;
 use ssc::TapeDrive;
-use ssc::timing::SimulationClock;
+use ssc::media::geometry::LtoGeneration;
 use vtld::admin::{AdminState, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
@@ -86,12 +87,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Create tape drives and collect notification handles for the changer
     let data_dir = std::path::PathBuf::from(&config.library.data_dir);
-    let clock = SimulationClock::realtime();
+    // Simulation clock: default instant (no delays) — adjustable via API
+    let simulation_clock = Arc::new(SimulationClock::instant());
+
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone(), clock.clone()));
+        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone(), simulation_clock.clone()));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
     }
@@ -118,6 +121,8 @@ async fn main() -> anyhow::Result<()> {
         config.library.slots as u16,
         &media_barcodes,
         drive_notifiers,
+        RobotTimingModel::scalar_i6(),
+        simulation_clock.clone(),
     ));
 
     let session_registry = Arc::new(SessionRegistry::new());
@@ -156,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
         changer_log,
         drive_logs,
         data_dir: data_dir.clone(),
+        simulation_clock,
     };
 
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());

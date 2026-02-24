@@ -8,12 +8,17 @@ use tracing::trace;
 use crate::sense::{self, SenseBuilder};
 use crate::state::{ChangerState, MediumType, ELEM_DTE, ELEM_IEE, ELEM_MTE};
 
-/// Handle MOVE MEDIUM (A5h).
-pub fn handle_move_medium(
-    cdb: &[u8],
-    st: &mut ChangerState,
-    drives: &[Arc<dyn MediaLoadNotify>],
-) -> ScsiResult {
+/// Parsed and validated MOVE MEDIUM parameters.
+pub struct MoveParams {
+    pub source: u16,
+    pub dest: u16,
+    pub source_is_drive: bool,
+    pub dest_is_drive: bool,
+}
+
+/// Parse the CDB and validate the move against current state.
+/// Returns `Ok(MoveParams)` if the move is valid, or `Err(ScsiResult)` on error.
+pub fn validate_move_medium(cdb: &[u8], st: &ChangerState) -> Result<MoveParams, ScsiResult> {
     let _transport = ((cdb[2] as u16) << 8) | cdb[3] as u16;
     let source = ((cdb[4] as u16) << 8) | cdb[5] as u16;
     let dest = ((cdb[6] as u16) << 8) | cdb[7] as u16;
@@ -21,71 +26,105 @@ pub fn handle_move_medium(
 
     // No media inversion support
     if invert {
-        return SenseBuilder::invalid_field_in_cdb().to_check_condition();
+        return Err(SenseBuilder::invalid_field_in_cdb().to_check_condition());
     }
 
     // Validate source element exists
     if !st.elements.contains_key(&source) {
-        return SenseBuilder::invalid_element_address()
+        return Err(SenseBuilder::invalid_element_address()
             .with_information(source as u32)
-            .to_check_condition();
+            .to_check_condition());
     }
 
     // Validate destination element exists
     if !st.elements.contains_key(&dest) {
-        return SenseBuilder::invalid_element_address()
+        return Err(SenseBuilder::invalid_element_address()
             .with_information(dest as u32)
-            .to_check_condition();
+            .to_check_condition());
     }
 
     // Cannot move TO medium transport element
     if st.elements[&dest].element_type == ELEM_MTE {
-        return SenseBuilder::invalid_element_address()
+        return Err(SenseBuilder::invalid_element_address()
             .with_information(dest as u32)
-            .to_check_condition();
+            .to_check_condition());
     }
 
     // Check source has media
+    if !st.elements[&source].full {
+        return Err(SenseBuilder::source_element_empty()
+            .with_information(source as u32)
+            .to_check_condition());
+    }
+
+    // Check destination is empty
+    if st.elements[&dest].full {
+        return Err(SenseBuilder::destination_element_full()
+            .with_information(dest as u32)
+            .to_check_condition());
+    }
+
+    // Check source element is accessible
+    if st.elements[&source].disabled {
+        return Err(SenseBuilder::element_disabled()
+            .with_information(source as u32)
+            .to_check_condition());
+    }
+
+    // Check destination element is accessible
+    if st.elements[&dest].disabled {
+        return Err(SenseBuilder::element_disabled()
+            .with_information(dest as u32)
+            .to_check_condition());
+    }
+
+    // Check medium removal prevention for I/E destinations
+    if st.elements[&dest].element_type == ELEM_IEE && st.prevent_medium_removal {
+        return Err(SenseBuilder::medium_removal_prevented().to_check_condition());
+    }
+
+    // Check drive not installed for DTE
+    if st.elements[&source].element_type == ELEM_DTE && !st.elements[&source].access {
+        return Err(SenseBuilder::drive_not_installed()
+            .with_information(source as u32)
+            .to_check_condition());
+    }
+    if st.elements[&dest].element_type == ELEM_DTE && !st.elements[&dest].access {
+        return Err(SenseBuilder::drive_not_installed()
+            .with_information(dest as u32)
+            .to_check_condition());
+    }
+
+    let source_is_drive = st.elements[&source].element_type == ELEM_DTE;
+    let dest_is_drive = st.elements[&dest].element_type == ELEM_DTE;
+
+    Ok(MoveParams {
+        source,
+        dest,
+        source_is_drive,
+        dest_is_drive,
+    })
+}
+
+/// Execute the media transfer. Called after timing delay with state re-locked.
+/// Re-validates key preconditions to handle TOCTOU races.
+pub fn execute_move_medium(
+    source: u16,
+    dest: u16,
+    st: &mut ChangerState,
+    drives: &[Arc<dyn MediaLoadNotify>],
+) -> ScsiResult {
+    // Re-validate after sleep (another operation may have changed state)
+    if !st.elements.contains_key(&source) || !st.elements.contains_key(&dest) {
+        return SenseBuilder::invalid_element_address().to_check_condition();
+    }
     if !st.elements[&source].full {
         return SenseBuilder::source_element_empty()
             .with_information(source as u32)
             .to_check_condition();
     }
-
-    // Check destination is empty
     if st.elements[&dest].full {
         return SenseBuilder::destination_element_full()
-            .with_information(dest as u32)
-            .to_check_condition();
-    }
-
-    // Check source element is accessible
-    if st.elements[&source].disabled {
-        return SenseBuilder::element_disabled()
-            .with_information(source as u32)
-            .to_check_condition();
-    }
-
-    // Check destination element is accessible
-    if st.elements[&dest].disabled {
-        return SenseBuilder::element_disabled()
-            .with_information(dest as u32)
-            .to_check_condition();
-    }
-
-    // Check medium removal prevention for I/E destinations
-    if st.elements[&dest].element_type == ELEM_IEE && st.prevent_medium_removal {
-        return SenseBuilder::medium_removal_prevented().to_check_condition();
-    }
-
-    // Check drive not installed for DTE
-    if st.elements[&source].element_type == ELEM_DTE && !st.elements[&source].access {
-        return SenseBuilder::drive_not_installed()
-            .with_information(source as u32)
-            .to_check_condition();
-    }
-    if st.elements[&dest].element_type == ELEM_DTE && !st.elements[&dest].access {
-        return SenseBuilder::drive_not_installed()
             .with_information(dest as u32)
             .to_check_condition();
     }
@@ -132,4 +171,16 @@ pub fn handle_move_medium(
     trace!(source, dest, barcode = ?barcode, "MOVE MEDIUM complete");
 
     sense::good()
+}
+
+/// Handle MOVE MEDIUM (A5h) — non-timed version for direct use in tests.
+pub fn handle_move_medium(
+    cdb: &[u8],
+    st: &mut ChangerState,
+    drives: &[Arc<dyn MediaLoadNotify>],
+) -> ScsiResult {
+    match validate_move_medium(cdb, st) {
+        Ok(params) => execute_move_medium(params.source, params.dest, st, drives),
+        Err(result) => result,
+    }
 }

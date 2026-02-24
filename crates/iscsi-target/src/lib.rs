@@ -3,9 +3,11 @@ pub mod login;
 pub mod pdu;
 pub mod scsi_log;
 pub mod session;
+pub mod simulation_clock;
 pub mod target;
 
 pub use session::{ConnectionSnapshot, ConnectionStats, SessionInfo, SessionRegistry, SessionSnapshot};
+pub use simulation_clock::SimulationClock;
 
 /// Result of executing a SCSI command.
 pub struct ScsiResult {

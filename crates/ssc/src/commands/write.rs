@@ -3,7 +3,7 @@
 use crate::buffer::DriveBuffer;
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
-use crate::timing::SimulationClock;
+use iscsi_target::SimulationClock;
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
@@ -118,7 +118,7 @@ pub fn handle_write_6(
                 if let Some(ref mut buf) = buffer {
                     let stall = buf.accept_write(native_bytes as usize, clock);
                     if !stall.is_zero() {
-                        std::thread::sleep(clock.scale_duration(stall));
+                        clock.sleep_sync(stall);
                         buf.tick(clock);
                     }
                 }
@@ -157,7 +157,7 @@ pub fn handle_write_6(
         if let Some(ref mut buf) = buffer {
             let stall = buf.accept_write(native_bytes as usize, clock);
             if !stall.is_zero() {
-                std::thread::sleep(clock.scale_duration(stall));
+                clock.sleep_sync(stall);
                 buf.tick(clock);
             }
         }

@@ -1,74 +1,7 @@
-//! Simulation timing model and clock scaling.
+//! Timing model for tape drive physical operations.
 //!
-//! The SimulationClock controls how fast simulated operations complete.
-//! A scale of 1.0 is real-time, 0.0 is instant (for CI), and intermediate
-//! values speed things up proportionally.
-
-use std::time::Duration;
-
-/// A clock that scales simulated durations for configurable-speed simulation.
-#[derive(Debug, Clone)]
-pub struct SimulationClock {
-    /// Time scale factor: 1.0 = real-time, 0.0 = instant, 0.5 = 2x faster.
-    scale: f64,
-}
-
-impl SimulationClock {
-    /// Create a new simulation clock with the given scale factor.
-    ///
-    /// - `0.0` = instant (for CI/tests)
-    /// - `0.1` = 10x faster than real-time
-    /// - `1.0` = real-time
-    pub fn new(scale: f64) -> Self {
-        Self {
-            scale: scale.max(0.0),
-        }
-    }
-
-    /// Create an instant clock (scale = 0.0).
-    pub fn instant() -> Self {
-        Self::new(0.0)
-    }
-
-    /// Create a real-time clock (scale = 1.0).
-    pub fn realtime() -> Self {
-        Self::new(1.0)
-    }
-
-    /// The current scale factor.
-    pub fn scale(&self) -> f64 {
-        self.scale
-    }
-
-    /// Whether this clock is instant (scale = 0).
-    pub fn is_instant(&self) -> bool {
-        self.scale == 0.0
-    }
-
-    /// Scale a duration according to the current time factor.
-    pub fn scale_duration(&self, d: Duration) -> Duration {
-        if self.scale == 0.0 {
-            Duration::ZERO
-        } else {
-            d.mul_f64(self.scale)
-        }
-    }
-
-    /// Sleep for a simulated duration, scaled by the clock factor.
-    /// Returns immediately if scale is 0.
-    pub async fn sleep(&self, real_duration: Duration) {
-        let scaled = self.scale_duration(real_duration);
-        if !scaled.is_zero() {
-            tokio::time::sleep(scaled).await;
-        }
-    }
-}
-
-impl Default for SimulationClock {
-    fn default() -> Self {
-        Self::instant()
-    }
-}
+//! Per-generation constants for simulating realistic drive latencies
+//! (rewind, load, locate, backhitch, etc.).
 
 /// Per-generation timing constants for physical operations.
 #[derive(Debug, Clone)]

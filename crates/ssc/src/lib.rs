@@ -32,7 +32,7 @@ pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
 use media::tape::{DriveMediaState, RecordDescriptor, TapeMedia};
 use mode_pages::{ModePageRegistry, SharedPartitionState};
 use snapshot::{DriveActivity, DriveSnapshot};
-use timing::SimulationClock;
+use iscsi_target::SimulationClock;
 
 /// Internal drive state protected by a mutex.
 struct DriveState {
@@ -69,11 +69,11 @@ pub struct TapeDrive {
     /// Shared drive statistics (consumed by live log pages).
     drive_stats: SharedDriveStats,
     /// Simulation clock for timing delays.
-    clock: SimulationClock,
+    clock: Arc<SimulationClock>,
 }
 
 impl TapeDrive {
-    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf, clock: SimulationClock) -> Self {
+    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf, clock: Arc<SimulationClock>) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
         let vendor = "IBM     ";

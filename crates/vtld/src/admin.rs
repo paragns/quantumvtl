@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, Notify};
 use tracing::info;
 use utoipa::OpenApi;
 
+use iscsi_target::SimulationClock;
 use iscsi_target::cdb_decode::{decode_cdb, decode_response, CdbBreakdown, ResponseBreakdown};
 use iscsi_target::scsi_log::{scsi_status_name, DeviceType, ScsiCommandLog};
 use iscsi_target::SessionRegistry;
@@ -40,6 +41,7 @@ pub struct AdminState {
     pub changer_log: Arc<ScsiCommandLog>,
     pub drive_logs: Vec<Arc<ScsiCommandLog>>,
     pub data_dir: std::path::PathBuf,
+    pub simulation_clock: Arc<SimulationClock>,
 }
 
 #[derive(Embed)]
@@ -1233,6 +1235,60 @@ async fn static_handler(uri: Uri) -> Response {
 
 // --- Router ---
 
+// --- Simulation Speed ---
+
+#[derive(Serialize, Deserialize)]
+struct SimulationSpeedResponse {
+    speed_factor: f64,
+    label: String,
+}
+
+#[derive(Deserialize)]
+struct SimulationSpeedRequest {
+    speed_factor: f64,
+}
+
+fn speed_label(factor: f64) -> String {
+    if factor > 1_000_000.0 || factor.is_infinite() {
+        "Instant".to_string()
+    } else if (factor - 1.0).abs() < 0.05 {
+        "Realistic".to_string()
+    } else if factor < 0.2 {
+        "Glacial".to_string()
+    } else {
+        format!("{factor:.1}x")
+    }
+}
+
+async fn get_simulation_speed(
+    State(state): State<AdminState>,
+) -> Json<SimulationSpeedResponse> {
+    let factor = state.simulation_clock.speed_factor();
+    Json(SimulationSpeedResponse {
+        speed_factor: factor,
+        label: speed_label(factor),
+    })
+}
+
+async fn set_simulation_speed(
+    State(state): State<AdminState>,
+    Json(req): Json<SimulationSpeedRequest>,
+) -> Json<SimulationSpeedResponse> {
+    let factor = if req.speed_factor > 1_000_000.0 {
+        f64::INFINITY
+    } else if req.speed_factor < 0.01 {
+        0.01
+    } else {
+        req.speed_factor
+    };
+    state.simulation_clock.set_speed_factor(factor);
+    let _ = state.ws_tx.send(());
+    Json(SimulationSpeedResponse {
+        speed_factor: factor,
+        label: speed_label(factor),
+    })
+}
+
 pub fn admin_router(state: AdminState) -> Router {
     let protected = Router::new()
         .route("/api/vtl/status", get(vtl_status))
@@ -1254,6 +1310,7 @@ pub fn admin_router(state: AdminState) -> Router {
             "/api/vtl/sessions/{tsih}/scsi-log/{seq}",
             get(session_scsi_log_entry),
         )
+        .route("/api/vtl/simulation-speed", get(get_simulation_speed).post(set_simulation_speed))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

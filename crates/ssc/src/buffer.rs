@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::media::geometry::TapeGeometry;
-use crate::timing::{SimulationClock, TimingModel};
+use iscsi_target::SimulationClock;
+use crate::timing::TimingModel;
 
 // ── Speed table ─────────────────────────────────────────────────────────────
 
@@ -199,7 +200,7 @@ impl DriveBuffer {
         let elapsed = now.duration_since(self.last_tick);
         self.last_tick = now;
 
-        if clock.is_instant() {
+        if clock.speed_factor().is_infinite() {
             // In instant mode, drain/fill everything immediately
             match self.phase {
                 BufferPhase::Writing | BufferPhase::Flushing => {
@@ -219,7 +220,7 @@ impl DriveBuffer {
             return;
         }
 
-        let elapsed_secs = elapsed.as_secs_f64() * clock.scale();
+        let elapsed_secs = elapsed.as_secs_f64() * clock.speed_factor();
         if elapsed_secs <= 0.0 {
             return;
         }
@@ -290,7 +291,7 @@ impl DriveBuffer {
         // Speed governor
         self.update_speed_governor();
 
-        if clock.is_instant() {
+        if clock.speed_factor().is_infinite() {
             return Duration::ZERO;
         }
 
@@ -328,7 +329,7 @@ impl DriveBuffer {
         // Speed governor
         self.update_speed_governor();
 
-        if clock.is_instant() {
+        if clock.speed_factor().is_infinite() {
             self.read_cache_bytes = self.read_cache_bytes.saturating_sub(native_bytes);
             return Duration::ZERO;
         }
@@ -473,7 +474,7 @@ impl DriveBuffer {
     // ── Private helpers ─────────────────────────────────────────────────
 
     fn update_host_rate(&mut self, bytes: usize, clock: &SimulationClock) {
-        if clock.is_instant() {
+        if clock.speed_factor().is_infinite() {
             return;
         }
         let now = Instant::now();

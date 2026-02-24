@@ -16,14 +16,16 @@ pub mod timing;
 pub mod vpd;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
+use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult, SimulationClock};
 use tracing::trace;
 
 use commands::opcodes::*;
 use log_pages::LogPageRegistry;
 use mode_pages::ModePageRegistry;
 use state::ChangerState;
+use timing::RobotTimingModel;
 
 // Re-export types used by vtld/admin
 pub use snapshot::{ChangerSnapshot, ElementSnapshot, ElementType};
@@ -47,6 +49,12 @@ pub struct MediaChanger {
     mode_pages: ModePageRegistry,
     /// Log page registry.
     log_pages: LogPageRegistry,
+    /// Robot timing model (pick/place/travel constants).
+    timing: RobotTimingModel,
+    /// Shared simulation clock (controls speed factor).
+    clock: Arc<SimulationClock>,
+    /// Serializes robot operations (one-at-a-time, like a real robot arm).
+    robot_busy: Mutex<()>,
 }
 
 impl MediaChanger {
@@ -57,6 +65,8 @@ impl MediaChanger {
         num_slots: u16,
         media_barcodes: &[String],
         drives: Vec<Arc<dyn MediaLoadNotify>>,
+        timing: RobotTimingModel,
+        clock: Arc<SimulationClock>,
     ) -> Self {
         let vendor = "QUANTUM ";
         let product = format!("{:<16}", model);
@@ -121,6 +131,9 @@ impl MediaChanger {
             drives,
             mode_pages,
             log_pages,
+            timing,
+            clock,
+            robot_busy: Mutex::new(()),
         }
     }
 
@@ -128,6 +141,57 @@ impl MediaChanger {
     pub fn snapshot(&self) -> ChangerSnapshot {
         let st = self.state.lock().unwrap();
         ChangerSnapshot::from_state(&st, &self.vendor, &self.product, &self.serial)
+    }
+
+    /// MOVE MEDIUM with robot serialization and timing.
+    fn timed_move_medium(&self, cdb: &[u8]) -> ScsiResult {
+        // 1. Lock state, validate, extract params, release state (fast-fail on errors)
+        let params = {
+            let st = self.state.lock().unwrap();
+            match commands::move_medium::validate_move_medium(cdb, &st) {
+                Ok(params) => params,
+                Err(result) => return result,
+            }
+        };
+
+        let slot_distance = params.source.abs_diff(params.dest);
+
+        // 2. Lock robot_busy (serialize with other robot operations)
+        let _robot = self.robot_busy.lock().unwrap();
+
+        // 3. Compute timing and sleep
+        let secs = self.timing.estimate_move_sec(
+            slot_distance,
+            params.source_is_drive,
+            params.dest_is_drive,
+        );
+        self.clock.sleep_sync(Duration::from_secs_f64(secs));
+
+        // 4. Re-lock state, re-validate, and execute
+        let mut st = self.state.lock().unwrap();
+        commands::move_medium::execute_move_medium(
+            params.source,
+            params.dest,
+            &mut st,
+            &self.drives,
+        )
+    }
+
+    /// INITIALIZE ELEMENT STATUS with robot serialization and timing.
+    fn timed_initialize_element_status(&self) -> ScsiResult {
+        let num_elements = {
+            let st = self.state.lock().unwrap();
+            st.elements.len() as u32
+        };
+
+        // Serialize with other robot operations
+        let _robot = self.robot_busy.lock().unwrap();
+
+        // Simulate inventory scan time
+        let secs = self.timing.estimate_scan_sec(num_elements);
+        self.clock.sleep_sync(Duration::from_secs_f64(secs));
+
+        sense::good()
     }
 }
 
@@ -153,16 +217,22 @@ impl ScsiDevice for MediaChanger {
             _ => {}
         }
 
+        // MOVE MEDIUM: validate → serialize → sleep → execute
+        if opcode == MOVE_MEDIUM {
+            return self.timed_move_medium(cdb);
+        }
+
+        // INITIALIZE ELEMENT STATUS: serialize → sleep → return GOOD
+        if opcode == INITIALIZE_ELEMENT_STATUS || opcode == INIT_ELEMENT_STATUS_WITH_RANGE {
+            return self.timed_initialize_element_status();
+        }
+
         let mut st = self.state.lock().unwrap();
 
         // Commands that need mutable state
         match opcode {
             TEST_UNIT_READY => commands::control::handle_test_unit_ready(&mut st),
             REQUEST_SENSE => commands::control::handle_request_sense(cdb, &mut st),
-            INITIALIZE_ELEMENT_STATUS => commands::control::handle_initialize_element_status(cdb),
-            INIT_ELEMENT_STATUS_WITH_RANGE => {
-                commands::control::handle_init_element_status_with_range(cdb)
-            }
             PREVENT_ALLOW_MEDIUM_REMOVAL => {
                 commands::control::handle_prevent_allow_medium_removal(cdb, &mut st)
             }
@@ -171,8 +241,9 @@ impl ScsiDevice for MediaChanger {
             MODE_SELECT_6 => commands::mode::handle_mode_select_6(cdb, data_out),
             MODE_SELECT_10 => commands::mode::handle_mode_select_10(cdb, data_out),
             LOG_SENSE => commands::log::handle_log_sense(cdb, &self.log_pages),
-            MOVE_MEDIUM => commands::move_medium::handle_move_medium(cdb, &mut st, &self.drives),
-            READ_ELEMENT_STATUS => commands::element_status::handle_read_element_status(cdb, &st),
+            READ_ELEMENT_STATUS => {
+                commands::element_status::handle_read_element_status(cdb, &st)
+            }
             _ => {
                 trace!(
                     opcode = format!("{:02X}h", opcode),
