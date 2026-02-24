@@ -25,7 +25,7 @@ impl LogicalPosition {
 pub struct PhysicalPosition {
     /// Current wrap number (0-based).
     pub wrap: u32,
-    /// Position within current wrap as fraction (0.0 = start, 1.0 = end).
+    /// Position within current wrap as percentage (0.0 = start, 100.0 = end).
     pub offset_in_wrap_pct: f64,
 }
 
@@ -63,7 +63,7 @@ pub fn logical_to_physical(
     let offset = wrap_position.fract();
 
     // Serpentine: even wraps go forward, odd wraps go backward
-    let offset_in_wrap_pct = if wrap % 2 == 0 { offset } else { 1.0 - offset };
+    let offset_in_wrap_pct = if wrap % 2 == 0 { offset * 100.0 } else { (1.0 - offset) * 100.0 };
 
     PhysicalPosition {
         wrap,
