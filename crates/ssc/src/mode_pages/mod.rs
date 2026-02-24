@@ -61,13 +61,14 @@ pub trait ModePage: Send + Sync {
 }
 
 /// Registry of mode pages with dispatch methods.
+#[derive(Default)]
 pub struct ModePageRegistry {
     pages: Vec<Box<dyn ModePage>>,
 }
 
 impl ModePageRegistry {
     pub fn new() -> Self {
-        Self { pages: Vec::new() }
+        Self::default()
     }
 
     /// Register a mode page implementation.

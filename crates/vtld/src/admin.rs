@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{header, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post};
@@ -12,16 +12,16 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, Notify};
 use tracing::info;
 use utoipa::OpenApi;
 
-use iscsi_target::SessionRegistry;
 use iscsi_target::cdb_decode::{decode_cdb, decode_response, CdbBreakdown, ResponseBreakdown};
-use iscsi_target::scsi_log::{DeviceType, ScsiCommandLog, scsi_status_name};
+use iscsi_target::scsi_log::{scsi_status_name, DeviceType, ScsiCommandLog};
+use iscsi_target::SessionRegistry;
 use smc::{ElementType, MediaChanger};
-use ssc::TapeDrive;
 use ssc::read_media_detail;
+use ssc::TapeDrive;
 
 use crate::config::UserConfig;
 use crate::error::{AdminError, Error};
@@ -825,7 +825,10 @@ fn log_to_summary(entry: &iscsi_target::scsi_log::ScsiLogEntry) -> ScsiLogSummar
 }
 
 fn hex_string(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+    data.iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[utoipa::path(
@@ -908,7 +911,10 @@ async fn scsi_log_entry(
     let (log, dt) = match path.device_type.as_str() {
         "changer" => (state.changer_log.clone(), DeviceType::MediaChanger),
         "drive" => {
-            let l = state.drive_logs.get(path.device_id).ok_or(StatusCode::NOT_FOUND)?;
+            let l = state
+                .drive_logs
+                .get(path.device_id)
+                .ok_or(StatusCode::NOT_FOUND)?;
             (l.clone(), DeviceType::TapeDrive)
         }
         _ => return Err(StatusCode::NOT_FOUND),
@@ -999,10 +1005,7 @@ async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
 
 // --- WebSocket ---
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AdminState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AdminState>) -> impl IntoResponse {
     ws.on_upgrade(|socket| handle_ws(socket, state))
 }
 
@@ -1111,7 +1114,10 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/config", get(config_show))
         .route("/api/vtl/scsi-log/changer", get(scsi_log_changer))
         .route("/api/vtl/scsi-log/drive/{id}", get(scsi_log_drive))
-        .route("/api/vtl/scsi-log/entry/{device_type}/{device_id}/{seq}", get(scsi_log_entry))
+        .route(
+            "/api/vtl/scsi-log/entry/{device_type}/{device_id}/{seq}",
+            get(scsi_log_entry),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,

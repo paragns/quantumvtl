@@ -24,6 +24,7 @@ struct ModePageEntry {
 }
 
 /// Registry of mode pages.
+#[derive(Default)]
 pub struct ModePageRegistry {
     pages: Vec<ModePageEntry>,
 }
@@ -44,9 +45,10 @@ impl ModePageRegistry {
 
     /// Get a single page. Returns None if not found.
     pub fn get_page(&self, page_code: u8, subpage_code: u8, pc: u8) -> Option<Vec<u8>> {
-        let entry = self.pages.iter().find(|e| {
-            e.page_code == page_code && e.subpage_code == subpage_code
-        })?;
+        let entry = self
+            .pages
+            .iter()
+            .find(|e| e.page_code == page_code && e.subpage_code == subpage_code)?;
 
         if pc == PC_CHANGEABLE {
             // No changeable parameters — return all zeros (same length)
@@ -74,6 +76,7 @@ impl ModePageRegistry {
 }
 
 /// Build the default mode page registry with all spec-required pages.
+#[allow(clippy::too_many_arguments)]
 pub fn default_registry(
     start_picker: u16,
     num_pickers: u16,
@@ -92,7 +95,7 @@ pub fn default_registry(
         page[0] = 0x1C; // Page code, PS=0, SPF=0
         page[1] = 0x0A; // Page length (10)
         page[3] = 0x08; // Dexcpt=1 (disable exceptions — must poll)
-        // MRIE=0, Interval Timer=0, Report Count=0
+                        // MRIE=0, Interval Timer=0, Report Count=0
         reg.register(0x1C, 0x00, page);
     }
 
@@ -101,7 +104,7 @@ pub fn default_registry(
         let mut page = vec![0u8; 20];
         page[0] = 0x1D;
         page[1] = 0x12; // Page length (18)
-        // MTE first address + count
+                        // MTE first address + count
         page[2] = (start_picker >> 8) as u8;
         page[3] = start_picker as u8;
         page[4] = (num_pickers >> 8) as u8;
@@ -139,25 +142,25 @@ pub fn default_registry(
         let mut page = vec![0u8; 20];
         page[0] = 0x1F;
         page[1] = 0x12; // Page length (18)
-        // Byte 2: Storage flags
-        //   Bit 7: StorDT=1 (drives can store cartridges)
-        //   Bit 6: StorIE=1 (I/E can store)
-        //   Bit 5: StorST=1 (storage can store)
-        //   Bit 4: StorMT=0 (accessor cannot store)
-        //   Bit 2: VTRP=1 (volume tag reader present)
-        //   Bit 1: S2C=1 (SMC-2 capabilities)
+                        // Byte 2: Storage flags
+                        //   Bit 7: StorDT=1 (drives can store cartridges)
+                        //   Bit 6: StorIE=1 (I/E can store)
+                        //   Bit 5: StorST=1 (storage can store)
+                        //   Bit 4: StorMT=0 (accessor cannot store)
+                        //   Bit 2: VTRP=1 (volume tag reader present)
+                        //   Bit 1: S2C=1 (SMC-2 capabilities)
         page[2] = 0xE6; // 1110_0110 = StorDT|StorIE|StorST | VTRP|S2C
-        // Byte 3: reserved
-        // Bytes 4-19: Movement matrix
-        // MT→X: byte 4 (MT as source)
-        //   bit 7=MTE_to_DTE? no  bit 6=MTE_to_IE? no  bit 5=MTE_to_ST? no  bit 4=MTE_to_MT? no
+                        // Byte 3: reserved
+                        // Bytes 4-19: Movement matrix
+                        // MT→X: byte 4 (MT as source)
+                        //   bit 7=MTE_to_DTE? no  bit 6=MTE_to_IE? no  bit 5=MTE_to_ST? no  bit 4=MTE_to_MT? no
         page[4] = 0x00; // MTE cannot be source for normal moves
-        // DTE→X: byte 8
-        //   bit 7=DTE_to_DTE? yes  bit 6=DTE_to_IE? yes  bit 5=DTE_to_ST? yes  bit 4=DTE_to_MT? no
+                        // DTE→X: byte 8
+                        //   bit 7=DTE_to_DTE? yes  bit 6=DTE_to_IE? yes  bit 5=DTE_to_ST? yes  bit 4=DTE_to_MT? no
         page[8] = 0xE0; // 1110_0000
-        // STE→X: byte 12
+                        // STE→X: byte 12
         page[12] = 0xE0; // STE→DTE, STE→IE, STE→ST
-        // IEE→X: byte 16
+                         // IEE→X: byte 16
         page[16] = 0xE0; // IEE→DTE, IEE→IE, IEE→ST
         reg.register(0x1F, 0x00, page);
     }
@@ -170,21 +173,21 @@ pub fn default_registry(
         page[1] = 0x41; // Subpage code
         page[2] = 0x00; // Page length MSB
         page[3] = 0x10; // Page length LSB (16)
-        // Byte 4: flags
-        //   Bit 6: MVPRV=1 (prevent moves to I/E when medium removal prevented)
-        //   Bit 3: USRCL=1 (user control I/E close)
-        //   Bit 2: USROP=1 (user control I/E open)
-        //   Bit 0: IEST=1 (detect medium in I/E)
+                        // Byte 4: flags
+                        //   Bit 6: MVPRV=1 (prevent moves to I/E when medium removal prevented)
+                        //   Bit 3: USRCL=1 (user control I/E close)
+                        //   Bit 2: USROP=1 (user control I/E open)
+                        //   Bit 0: IEST=1 (detect medium in I/E)
         page[4] = 0x4D; // 0100_1101
-        // Byte 5: flags
-        //   Bit 3: IEMGZ=1 (I/E magazine)
-        //   Bit 2: SMGZ=1 (storage magazine)
+                        // Byte 5: flags
+                        //   Bit 3: IEMGZ=1 (I/E magazine)
+                        //   Bit 2: SMGZ=1 (storage magazine)
         page[5] = 0x0C; // 0000_1100
-        // Byte 6: flags
-        //   Bit 7: TREXC=1 (true exchange capable)
-        //   Bit 6: LCKIE=1 (lock I/E with PREVENT/ALLOW)
+                        // Byte 6: flags
+                        //   Bit 7: TREXC=1 (true exchange capable)
+                        //   Bit 6: LCKIE=1 (lock I/E with PREVENT/ALLOW)
         page[6] = 0xC0; // 1100_0000
-        // Bytes 7-19: remaining flags (mostly 0 for our defaults)
+                        // Bytes 7-19: remaining flags (mostly 0 for our defaults)
         reg.register(0x1F, 0x41, page);
     }
 

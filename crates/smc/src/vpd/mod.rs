@@ -39,9 +39,9 @@ fn build_page_80(serial: &str) -> Vec<u8> {
     padded[..copy_len].copy_from_slice(&serial_bytes[..copy_len]);
 
     let mut data = vec![
-        0x08, // Device type
-        0x80, // Page code
-        0x00, // Reserved
+        0x08,               // Device type
+        0x80,               // Page code
+        0x00,               // Reserved
         padded.len() as u8, // Page length
     ];
     data.extend_from_slice(&padded);
@@ -66,7 +66,7 @@ fn build_page_83(vendor: &str, _product: &str, serial: &str) -> Vec<u8> {
     let hash = simple_hash(serial);
     let mut naa = [0u8; 8];
     naa[0] = 0x50; // NAA=5, top nibble of company ID
-    // Company ID: 00308C (Quantum/ADIC) → spread across bytes 0-2
+                   // Company ID: 00308C (Quantum/ADIC) → spread across bytes 0-2
     naa[0] |= 0x00; // NAA=5, company MSN=0
     naa[1] = 0x03;
     naa[2] = 0x08;

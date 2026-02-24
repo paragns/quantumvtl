@@ -1,7 +1,7 @@
 //! Changer state: element map, library status, Unit Attention queue.
 
-use std::collections::BTreeMap;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 // ── Element addressing (Quantum Scalar spec-mandated) ──────────────────────
 
@@ -22,9 +22,10 @@ pub const ELEM_DTE: u8 = 4; // Data Transfer Element (drive)
 // ── Medium type classification ─────────────────────────────────────────────
 
 /// Medium type as reported in element descriptors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum MediumType {
     /// Data cartridge (default).
+    #[default]
     Data = 0,
     /// Cleaning cartridge.
     Cleaning = 1,
@@ -53,12 +54,6 @@ impl MediumType {
     /// Three-bit encoding for element descriptor byte 9 bits 2-0.
     pub fn to_bits(self) -> u8 {
         self as u8
-    }
-}
-
-impl Default for MediumType {
-    fn default() -> Self {
-        MediumType::Data
     }
 }
 
@@ -140,10 +135,7 @@ pub enum LibraryState {
     /// Not ready for motion (with reason).
     NotReady(String),
     /// Moving media.
-    Moving {
-        source: u16,
-        dest: u16,
-    },
+    Moving { source: u16, dest: u16 },
     /// Scanning inventory.
     Scanning,
 }
@@ -166,23 +158,43 @@ pub struct UnitAttention {
 
 impl UnitAttention {
     pub fn power_on_reset() -> Self {
-        Self { sense_key: 0x06, asc: 0x29, ascq: 0x00 }
+        Self {
+            sense_key: 0x06,
+            asc: 0x29,
+            ascq: 0x00,
+        }
     }
 
     pub fn element_status_changed() -> Self {
-        Self { sense_key: 0x06, asc: 0x28, ascq: 0x00 }
+        Self {
+            sense_key: 0x06,
+            asc: 0x28,
+            ascq: 0x00,
+        }
     }
 
     pub fn mode_parameters_changed() -> Self {
-        Self { sense_key: 0x06, asc: 0x2A, ascq: 0x01 }
+        Self {
+            sense_key: 0x06,
+            asc: 0x2A,
+            ascq: 0x01,
+        }
     }
 
     pub fn door_opened_closed() -> Self {
-        Self { sense_key: 0x06, asc: 0x28, ascq: 0x01 }
+        Self {
+            sense_key: 0x06,
+            asc: 0x28,
+            ascq: 0x01,
+        }
     }
 
     pub fn firmware_changed() -> Self {
-        Self { sense_key: 0x06, asc: 0x3F, ascq: 0x01 }
+        Self {
+            sense_key: 0x06,
+            asc: 0x3F,
+            ascq: 0x01,
+        }
     }
 }
 
@@ -228,12 +240,7 @@ pub struct ChangerState {
 
 impl ChangerState {
     /// Create a new changer state with spec-mandated element addresses.
-    pub fn new(
-        num_drives: u16,
-        num_slots: u16,
-        num_iee: u16,
-        media_barcodes: &[String],
-    ) -> Self {
+    pub fn new(num_drives: u16, num_slots: u16, num_iee: u16, media_barcodes: &[String]) -> Self {
         let mut elements = BTreeMap::new();
 
         // MTE at 0x0001

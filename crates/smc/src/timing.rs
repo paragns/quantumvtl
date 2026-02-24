@@ -62,7 +62,12 @@ impl RobotTimingModel {
     ///
     /// `slot_distance` is the abstract distance between source and destination
     /// expressed in slot units.
-    pub fn estimate_move_sec(&self, slot_distance: u16, source_is_drive: bool, dest_is_drive: bool) -> f64 {
+    pub fn estimate_move_sec(
+        &self,
+        slot_distance: u16,
+        source_is_drive: bool,
+        dest_is_drive: bool,
+    ) -> f64 {
         let travel = slot_distance as f64 / self.travel_speed_slots_per_sec;
         let pick = if source_is_drive {
             self.drive_unload_sec

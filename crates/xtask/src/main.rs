@@ -1,6 +1,6 @@
+use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::env;
 
 fn repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -29,7 +29,11 @@ fn build_frontend() -> bool {
 
     if !frontend_dir.join("node_modules").exists() {
         eprintln!("Installing frontend dependencies...");
-        if !run_cmd(Command::new("npm").arg("install").current_dir(&frontend_dir)) {
+        if !run_cmd(
+            Command::new("npm")
+                .arg("install")
+                .current_dir(&frontend_dir),
+        ) {
             eprintln!("ERROR: npm install failed");
             return false;
         }

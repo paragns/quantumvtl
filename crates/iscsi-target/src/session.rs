@@ -16,6 +16,7 @@ pub struct SessionInfo {
 }
 
 /// Thread-safe registry of active iSCSI sessions.
+#[derive(Default)]
 pub struct SessionRegistry {
     sessions: Mutex<HashMap<u16, SessionInfo>>,
 }

@@ -104,11 +104,12 @@ fn page_83_identification(serial: &str) -> Vec<u8> {
 
     // Descriptor 2: NAA WWNN (fabricated)
     // NAA=5 (IEEE registered), OUI=fabricated
-    let mut desc2 = Vec::new();
-    desc2.push(0x01); // code set = binary
-    desc2.push(0x03); // PIV=0, association=0, identifier type=3 (NAA)
-    desc2.push(0x00); // reserved
-    desc2.push(0x08); // identifier length = 8
+    let mut desc2 = vec![
+        0x01, // code set = binary
+        0x03, // PIV=0, association=0, identifier type=3 (NAA)
+        0x00, // reserved
+        0x08, // identifier length = 8
+    ];
                       // NAA 5 + OUI 00:11:22 + vendor-specific from serial hash
     let serial_hash = simple_hash(serial);
     desc2.extend_from_slice(&[
@@ -124,11 +125,12 @@ fn page_83_identification(serial: &str) -> Vec<u8> {
     data.extend(&desc2);
 
     // Descriptor 3: Relative target port
-    let mut desc3 = Vec::new();
-    desc3.push(0x01); // binary
-    desc3.push(0x14); // PIV=1, association=1 (target port), type=4 (relative target port)
-    desc3.push(0x00);
-    desc3.push(0x04); // length = 4
+    let mut desc3 = vec![
+        0x01, // binary
+        0x14, // PIV=1, association=1 (target port), type=4 (relative target port)
+        0x00,
+        0x04, // length = 4
+    ];
     desc3.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // relative target port = 1
     data.extend(&desc3);
 

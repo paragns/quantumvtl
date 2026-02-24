@@ -24,6 +24,12 @@ struct LogState {
     tape_alerts: [bool; 64],
 }
 
+impl Default for LogPageRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogPageRegistry {
     pub fn new() -> Self {
         Self {
@@ -66,7 +72,7 @@ impl LogPageRegistry {
 
     /// Set a TapeAlert flag (1-based index, 1-64).
     pub fn set_alert(&self, flag: u8, active: bool) {
-        if flag >= 1 && flag <= 64 {
+        if (1..=64).contains(&flag) {
             self.state.lock().unwrap().tape_alerts[(flag - 1) as usize] = active;
         }
     }
@@ -86,38 +92,34 @@ pub fn default_registry() -> LogPageRegistry {
 
 /// Build Temperature log page (0Dh).
 fn build_temperature_page(temp_c: u8) -> Vec<u8> {
-    let mut data = Vec::with_capacity(8);
-    // Page header
-    data.push(0x0D); // Page code
-    data.push(0x00); // Subpage code
-    data.push(0x00); // Page length MSB
-    data.push(0x06); // Page length LSB (6 bytes of parameters)
-
-    // Parameter: code 0000h, 2-byte value
-    data.push(0x00); // Parameter code MSB
-    data.push(0x00); // Parameter code LSB
-    data.push(0x03); // Control: binary, list format
-    data.push(0x02); // Parameter length
-    data.push(0x00); // Reserved
-    data.push(temp_c); // Temperature in °C
-    data
+    vec![
+        0x0D,   // Page code
+        0x00,   // Subpage code
+        0x00,   // Page length MSB
+        0x06,   // Page length LSB (6 bytes of parameters)
+        0x00,   // Parameter code MSB
+        0x00,   // Parameter code LSB
+        0x03,   // Control: binary, list format
+        0x02,   // Parameter length
+        0x00,   // Reserved
+        temp_c, // Temperature in °C
+    ]
 }
 
 /// Build Humidity log page (30h).
 fn build_humidity_page(humidity_pct: u8) -> Vec<u8> {
-    let mut data = Vec::with_capacity(8);
-    data.push(0x30);
-    data.push(0x00);
-    data.push(0x00);
-    data.push(0x06);
-
-    data.push(0x00);
-    data.push(0x00);
-    data.push(0x03);
-    data.push(0x02);
-    data.push(0x00);
-    data.push(humidity_pct);
-    data
+    vec![
+        0x30,         // Page code
+        0x00,         // Subpage code
+        0x00,         // Page length MSB
+        0x06,         // Page length LSB
+        0x00,         // Parameter code MSB
+        0x00,         // Parameter code LSB
+        0x03,         // Control: binary
+        0x02,         // Parameter length
+        0x00,         // Reserved
+        humidity_pct, // Humidity in %
+    ]
 }
 
 /// Build TapeAlert log page (2Eh) — 64 individual parameters.
@@ -159,8 +161,8 @@ fn build_tape_alert_response_page(alerts: &[bool; 64]) -> Vec<u8> {
 
     // Build 8-byte bitmap (flag 1 = byte 0 bit 7, flag 8 = byte 0 bit 0, etc.)
     let mut bitmap = [0u8; 8];
-    for i in 0..64 {
-        if alerts[i] {
+    for (i, &alert) in alerts.iter().enumerate() {
+        if alert {
             let byte_idx = i / 8;
             let bit_idx = 7 - (i % 8);
             bitmap[byte_idx] |= 1 << bit_idx;

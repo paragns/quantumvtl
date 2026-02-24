@@ -1904,8 +1904,8 @@ rm -rf /tmp/z7_source /tmp/z7_restore
 
 # Z.8: LOG SENSE page 0Ch — Sequential Access Device (capacity/byte counters)
 log "Z.8: LOG SENSE 0Ch — Sequential Access Device page"
-# LOG SENSE: CDB = 4D 00 40 0C 00 00 00 FF FF 00 (page 0C, alloc len 0xFFFF)
-LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 40 0c 00 00 00 ff ff 00 2>&1)
+# LOG SENSE: CDB = 4D 00 0C 00 00 00 00 FF FF 00 (page 0C, subpage 0, alloc len 0xFFFF)
+LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 0c 00 00 00 00 ff ff 00 2>&1)
 LS_RC=$?
 if [ $LS_RC -eq 0 ]; then
     # Just verify we got data back (non-empty response)
@@ -1920,7 +1920,7 @@ fi
 
 # Z.9: LOG SENSE page 1Bh — Data Compression
 log "Z.9: LOG SENSE 1Bh — Data Compression page"
-LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 40 1b 00 00 00 ff ff 00 2>&1)
+LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 1b 00 00 00 00 ff ff 00 2>&1)
 LS_RC=$?
 if [ $LS_RC -eq 0 ]; then
     pass "Z.9: LOG SENSE 1Bh returns Data Compression data"
@@ -1930,7 +1930,7 @@ fi
 
 # Z.10: LOG SENSE page 31h — Tape Capacity
 log "Z.10: LOG SENSE 31h — Tape Capacity page"
-LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 40 31 00 00 00 ff ff 00 2>&1)
+LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 31 00 00 00 00 ff ff 00 2>&1)
 LS_RC=$?
 if [ $LS_RC -eq 0 ]; then
     pass "Z.10: LOG SENSE 31h returns Tape Capacity data"
@@ -1940,7 +1940,7 @@ fi
 
 # Z.11: LOG SENSE page 17h — Volume Statistics
 log "Z.11: LOG SENSE 17h — Volume Statistics page"
-LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 40 17 00 00 00 ff ff 00 2>&1)
+LS_OUT=$(sg_raw -r 65535 "$TAPE_SG" 4d 00 17 00 00 00 00 ff ff 00 2>&1)
 LS_RC=$?
 if [ $LS_RC -eq 0 ]; then
     pass "Z.11: LOG SENSE 17h returns Volume Statistics data"

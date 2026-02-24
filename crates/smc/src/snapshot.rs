@@ -1,7 +1,7 @@
 //! Dashboard snapshot types for the media changer.
 
-use serde::Serialize;
 use crate::state::{self, ChangerState, LibraryState, MediumType};
+use serde::Serialize;
 
 /// Public element type enum for API consumers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -76,12 +76,7 @@ pub struct ChangerSnapshot {
 
 impl ChangerSnapshot {
     /// Build a snapshot from changer state.
-    pub fn from_state(
-        st: &ChangerState,
-        vendor: &str,
-        product: &str,
-        serial: &str,
-    ) -> Self {
+    pub fn from_state(st: &ChangerState, vendor: &str, product: &str, serial: &str) -> Self {
         let elements = st
             .elements
             .iter()

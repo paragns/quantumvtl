@@ -86,7 +86,11 @@ fn check_error(status: StatusCode, body: &str) -> Result<()> {
     Ok(())
 }
 
-fn auth_header(client: &Client, url: &str, token: &Option<String>) -> reqwest::blocking::RequestBuilder {
+fn auth_header(
+    client: &Client,
+    url: &str,
+    token: &Option<String>,
+) -> reqwest::blocking::RequestBuilder {
     let builder = client.get(url);
     if let Some(t) = token {
         builder.bearer_auth(t)
@@ -134,7 +138,10 @@ fn cmd_status(client: &Client, base: &str, token: &Option<String>) -> Result<()>
     let body = resp.text()?;
     check_error(status, &body)?;
     let v: serde_json::Value = serde_json::from_str(&body)?;
-    println!("library status: {}", v["status"].as_str().unwrap_or("unknown"));
+    println!(
+        "library status: {}",
+        v["status"].as_str().unwrap_or("unknown")
+    );
     Ok(())
 }
 

@@ -159,9 +159,7 @@ impl ScsiDevice for MediaChanger {
         match opcode {
             TEST_UNIT_READY => commands::control::handle_test_unit_ready(&mut st),
             REQUEST_SENSE => commands::control::handle_request_sense(cdb, &mut st),
-            INITIALIZE_ELEMENT_STATUS => {
-                commands::control::handle_initialize_element_status(cdb)
-            }
+            INITIALIZE_ELEMENT_STATUS => commands::control::handle_initialize_element_status(cdb),
             INIT_ELEMENT_STATUS_WITH_RANGE => {
                 commands::control::handle_init_element_status_with_range(cdb)
             }
@@ -173,14 +171,13 @@ impl ScsiDevice for MediaChanger {
             MODE_SELECT_6 => commands::mode::handle_mode_select_6(cdb, data_out),
             MODE_SELECT_10 => commands::mode::handle_mode_select_10(cdb, data_out),
             LOG_SENSE => commands::log::handle_log_sense(cdb, &self.log_pages),
-            MOVE_MEDIUM => {
-                commands::move_medium::handle_move_medium(cdb, &mut st, &self.drives)
-            }
-            READ_ELEMENT_STATUS => {
-                commands::element_status::handle_read_element_status(cdb, &st)
-            }
+            MOVE_MEDIUM => commands::move_medium::handle_move_medium(cdb, &mut st, &self.drives),
+            READ_ELEMENT_STATUS => commands::element_status::handle_read_element_status(cdb, &st),
             _ => {
-                trace!(opcode = format!("{:02X}h", opcode), "unsupported SMC command");
+                trace!(
+                    opcode = format!("{:02X}h", opcode),
+                    "unsupported SMC command"
+                );
                 sense::SenseBuilder::invalid_opcode().to_check_condition()
             }
         }

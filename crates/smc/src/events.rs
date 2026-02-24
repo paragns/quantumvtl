@@ -28,9 +28,7 @@ pub enum ChangerEvent {
     /// An inventory scan has started.
     InventoryScanStarted,
     /// An inventory scan completed.
-    InventoryScanCompleted {
-        elements_scanned: u32,
-    },
+    InventoryScanCompleted { elements_scanned: u32 },
     /// A TapeAlert flag was raised.
     AlertRaised {
         flag: u16,
@@ -38,15 +36,9 @@ pub enum ChangerEvent {
         description: String,
     },
     /// Library state changed.
-    StateChanged {
-        old: String,
-        new: String,
-    },
+    StateChanged { old: String, new: String },
     /// Picker position updated.
-    PickerMoved {
-        from_address: u16,
-        to_address: u16,
-    },
+    PickerMoved { from_address: u16, to_address: u16 },
 }
 
 /// TapeAlert severity classification.

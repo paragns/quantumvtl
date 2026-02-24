@@ -63,7 +63,8 @@ pub fn logical_to_physical(
     let offset = wrap_position.fract();
 
     // Serpentine: even wraps go forward, odd wraps go backward
-    let offset_in_wrap_pct = if wrap % 2 == 0 { offset * 100.0 } else { (1.0 - offset) * 100.0 };
+    let offset_in_wrap_pct =
+        if wrap.is_multiple_of(2) { offset * 100.0 } else { (1.0 - offset) * 100.0 };
 
     PhysicalPosition {
         wrap,
@@ -84,7 +85,7 @@ pub fn requires_backhitch(from: &PhysicalPosition, to: &PhysicalPosition) -> boo
         return true; // Cross-wrap always involves repositioning
     }
     // Same wrap: check if we need to go backward
-    let forward = from.wrap % 2 == 0;
+    let forward = from.wrap.is_multiple_of(2);
     if forward {
         to.offset_in_wrap_pct < from.offset_in_wrap_pct
     } else {

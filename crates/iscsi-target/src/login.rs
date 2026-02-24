@@ -48,12 +48,7 @@ impl LoginNegotiator {
     }
 
     /// Handle a login request PDU. Returns a login response PDU.
-    pub fn handle_login(
-        &mut self,
-        req: &Pdu,
-        stat_sn: u32,
-        exp_cmd_sn: u32,
-    ) -> Pdu {
+    pub fn handle_login(&mut self, req: &Pdu, stat_sn: u32, exp_cmd_sn: u32) -> Pdu {
         let csg = req.login_csg();
         let nsg = req.login_nsg();
         let transit = req.login_transit();
@@ -69,9 +64,16 @@ impl LoginNegotiator {
             _ => {
                 warn!(csg, "unexpected login CSG");
                 pdu::build_login_response(
-                    req, stat_sn, exp_cmd_sn, exp_cmd_sn,
-                    csg, nsg, false, 0,
-                    2, 0, // Initiator Error
+                    req,
+                    stat_sn,
+                    exp_cmd_sn,
+                    exp_cmd_sn,
+                    csg,
+                    nsg,
+                    false,
+                    0,
+                    2,
+                    0, // Initiator Error
                     Vec::new(),
                 )
             }
@@ -92,9 +94,16 @@ impl LoginNegotiator {
             if k == "TargetName" && v != &self.target_name {
                 warn!(target = %v, expected = %self.target_name, "target name mismatch");
                 return pdu::build_login_response(
-                    req, stat_sn, exp_cmd_sn, exp_cmd_sn,
-                    0, 0, false, 0,
-                    2, 3, // Not Found
+                    req,
+                    stat_sn,
+                    exp_cmd_sn,
+                    exp_cmd_sn,
+                    0,
+                    0,
+                    false,
+                    0,
+                    2,
+                    3, // Not Found
                     Vec::new(),
                 );
             }
@@ -112,10 +121,8 @@ impl LoginNegotiator {
             }
         }
 
-        let response_pairs: Vec<(&str, &str)> = vec![
-            ("TargetPortalGroupTag", "1"),
-            ("AuthMethod", "None"),
-        ];
+        let response_pairs: Vec<(&str, &str)> =
+            vec![("TargetPortalGroupTag", "1"), ("AuthMethod", "None")];
         let data = serialize_kv_pairs(&response_pairs);
 
         // If transit, move to the next stage
@@ -126,9 +133,16 @@ impl LoginNegotiator {
         };
 
         pdu::build_login_response(
-            req, stat_sn, exp_cmd_sn, exp_cmd_sn,
-            resp_csg, resp_nsg, resp_transit, self.tsih,
-            0, 0, // Success
+            req,
+            stat_sn,
+            exp_cmd_sn,
+            exp_cmd_sn,
+            resp_csg,
+            resp_nsg,
+            resp_transit,
+            self.tsih,
+            0,
+            0, // Success
             data,
         )
     }
@@ -164,9 +178,16 @@ impl LoginNegotiator {
         };
 
         pdu::build_login_response(
-            req, stat_sn, exp_cmd_sn, exp_cmd_sn,
-            resp_csg, resp_nsg, resp_transit, self.tsih,
-            0, 0, // Success
+            req,
+            stat_sn,
+            exp_cmd_sn,
+            exp_cmd_sn,
+            resp_csg,
+            resp_nsg,
+            resp_transit,
+            self.tsih,
+            0,
+            0, // Success
             data,
         )
     }

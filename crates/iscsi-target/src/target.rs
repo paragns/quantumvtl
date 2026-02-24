@@ -46,11 +46,7 @@ impl TargetServer {
 
     /// Run the iSCSI target server, listening on the given address.
     /// Stops when `shutdown` is notified.
-    pub async fn run(
-        self,
-        addr: &str,
-        shutdown: Arc<Notify>,
-    ) -> std::io::Result<()> {
+    pub async fn run(self, addr: &str, shutdown: Arc<Notify>) -> std::io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!(addr, target = %self.target.name, "iSCSI target listening");
 
@@ -182,7 +178,14 @@ async fn handle_connection(
                     exp_cmd_sn = exp_cmd_sn.wrapping_add(1);
                 }
 
-                debug!(lun, cdb0 = cdb[0], edtl, read = read_bit, write = write_bit, "SCSI command");
+                debug!(
+                    lun,
+                    cdb0 = cdb[0],
+                    edtl,
+                    read = read_bit,
+                    write = write_bit,
+                    "SCSI command"
+                );
 
                 // Collect write data via R2T/Data-Out if this is a write command.
                 let write_data = if write_bit && edtl > 0 {
@@ -194,9 +197,13 @@ async fn handle_connection(
                         let remaining = edtl - data.len() as u32;
                         let ttt = itt; // Use ITT as TTT for simplicity.
                         let r2t = pdu::build_r2t(
-                            lun_raw, itt, ttt,
-                            stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
-                            0, // R2TSN
+                            lun_raw,
+                            itt,
+                            ttt,
+                            stat_sn,
+                            exp_cmd_sn,
+                            exp_cmd_sn.wrapping_add(32),
+                            0,                 // R2TSN
                             data.len() as u32, // buffer offset = amount already received
                             remaining,
                         );
@@ -206,7 +213,10 @@ async fn handle_connection(
                         loop {
                             let data_pdu = Pdu::read_from(&mut reader).await?;
                             if data_pdu.opcode() != pdu::OPCODE_DATA_OUT {
-                                warn!(opcode = data_pdu.opcode(), "expected Data-Out PDU during R2T");
+                                warn!(
+                                    opcode = data_pdu.opcode(),
+                                    "expected Data-Out PDU during R2T"
+                                );
                                 break;
                             }
 
@@ -253,13 +263,21 @@ async fn handle_connection(
                         data.truncate(edtl as usize);
                     }
                     pdu::build_data_in(
-                        itt, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
-                        result.status, data,
+                        itt,
+                        stat_sn,
+                        exp_cmd_sn,
+                        exp_cmd_sn.wrapping_add(32),
+                        result.status,
+                        data,
                     )
                 } else {
                     pdu::build_scsi_response(
-                        itt, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
-                        result.status, result.sense,
+                        itt,
+                        stat_sn,
+                        exp_cmd_sn,
+                        exp_cmd_sn.wrapping_add(32),
+                        result.status,
+                        result.sense,
                     )
                 };
                 stat_sn = stat_sn.wrapping_add(1);
@@ -272,9 +290,8 @@ async fn handle_connection(
                 if !req.is_immediate() {
                     exp_cmd_sn = exp_cmd_sn.wrapping_add(1);
                 }
-                let resp = pdu::build_nop_in(
-                    itt, ttt, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
-                );
+                let resp =
+                    pdu::build_nop_in(itt, ttt, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32));
                 stat_sn = stat_sn.wrapping_add(1);
                 resp.write_to(&mut writer).await?;
             }
@@ -294,7 +311,11 @@ async fn handle_connection(
                     }
                 }
                 let resp = pdu::build_text_response(
-                    itt, 0xFFFFFFFF, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
+                    itt,
+                    0xFFFFFFFF,
+                    stat_sn,
+                    exp_cmd_sn,
+                    exp_cmd_sn.wrapping_add(32),
                     resp_data,
                 );
                 stat_sn = stat_sn.wrapping_add(1);
@@ -307,7 +328,10 @@ async fn handle_connection(
                     exp_cmd_sn = exp_cmd_sn.wrapping_add(1);
                 }
                 let resp = pdu::build_logout_response(
-                    itt, stat_sn, exp_cmd_sn, exp_cmd_sn.wrapping_add(32),
+                    itt,
+                    stat_sn,
+                    exp_cmd_sn,
+                    exp_cmd_sn.wrapping_add(32),
                 );
                 resp.write_to(&mut writer).await?;
                 info!("logout complete");

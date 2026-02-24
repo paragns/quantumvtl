@@ -5,10 +5,7 @@ use crate::sense::{self, SenseBuilder};
 use iscsi_target::ScsiResult;
 
 /// Handle MODE SENSE(6) (1Ah).
-pub fn handle_mode_sense_6(
-    cdb: &[u8],
-    registry: &ModePageRegistry,
-) -> ScsiResult {
+pub fn handle_mode_sense_6(cdb: &[u8], registry: &ModePageRegistry) -> ScsiResult {
     let pc = cdb[2] >> 6;
     let page_code = cdb[2] & 0x3F;
     let subpage = cdb[3];
@@ -27,9 +24,9 @@ pub fn handle_mode_sense_6(
     let mode_data_len = (3 + page_data.len()) as u8;
     let mut data = Vec::with_capacity(4 + page_data.len());
     data.push(mode_data_len); // Byte 0: Mode data length
-    data.push(0x00);          // Byte 1: Medium type
-    data.push(0x00);          // Byte 2: Device-specific parameter
-    data.push(0x00);          // Byte 3: Block descriptor length
+    data.push(0x00); // Byte 1: Medium type
+    data.push(0x00); // Byte 2: Device-specific parameter
+    data.push(0x00); // Byte 3: Block descriptor length
     data.extend_from_slice(&page_data);
 
     data.truncate(alloc_len);
@@ -37,10 +34,7 @@ pub fn handle_mode_sense_6(
 }
 
 /// Handle MODE SENSE(10) (5Ah).
-pub fn handle_mode_sense_10(
-    cdb: &[u8],
-    registry: &ModePageRegistry,
-) -> ScsiResult {
+pub fn handle_mode_sense_10(cdb: &[u8], registry: &ModePageRegistry) -> ScsiResult {
     let pc = cdb[2] >> 6;
     let page_code = cdb[2] & 0x3F;
     let subpage = cdb[3];

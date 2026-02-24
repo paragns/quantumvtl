@@ -42,7 +42,11 @@ impl SenseBuilder {
     pub fn build(&self) -> Vec<u8> {
         let mut sense = vec![0u8; 18];
         // Byte 0: Valid bit | Response code (70h = current, fixed)
-        sense[0] = if self.information.is_some() { 0xF0 } else { 0x70 };
+        sense[0] = if self.information.is_some() {
+            0xF0
+        } else {
+            0x70
+        };
         // Byte 2: Sense key
         sense[2] = self.sense_key & 0x0F;
         // Bytes 3-6: Information field

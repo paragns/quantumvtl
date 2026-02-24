@@ -12,8 +12,7 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
     let start_addr = ((cdb[2] as u16) << 8) | cdb[3] as u16;
     let num_elements = ((cdb[4] as u16) << 8) | cdb[5] as u16;
     let _curdata = cdb[6] & 0x01 != 0;
-    let alloc_len =
-        ((cdb[7] as usize) << 16) | ((cdb[8] as usize) << 8) | (cdb[9] as usize);
+    let alloc_len = ((cdb[7] as usize) << 16) | ((cdb[8] as usize) << 8) | (cdb[9] as usize);
 
     if alloc_len == 0 {
         return SenseBuilder::invalid_field_in_cdb().to_check_condition();
@@ -56,9 +55,7 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
         let descriptors: Vec<_> = all_matching
             .iter()
             .filter(|&&(_, et)| et == etype)
-            .filter_map(|&(addr, _)| {
-                st.elements.get(&addr).map(|elem| (addr, elem))
-            })
+            .filter_map(|&(addr, _)| st.elements.get(&addr).map(|elem| (addr, elem)))
             .collect();
 
         if descriptors.is_empty() {

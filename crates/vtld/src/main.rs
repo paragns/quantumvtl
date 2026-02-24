@@ -1,16 +1,16 @@
 use std::sync::Arc;
 
 use rand::Rng;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{broadcast, Notify};
 use tracing::{error, info};
 
-use iscsi_target::SessionRegistry;
 use iscsi_target::scsi_log::{DeviceType, TracedDevice};
 use iscsi_target::target::{Target, TargetServer};
+use iscsi_target::SessionRegistry;
 use smc::MediaChanger;
-use ssc::TapeDrive;
 use ssc::media::geometry::LtoGeneration;
-use vtld::admin::{AdminState, run_admin_server};
+use ssc::TapeDrive;
+use vtld::admin::{run_admin_server, AdminState};
 use vtld::config::load_config;
 use vtld::store::Store;
 
@@ -76,7 +76,12 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Start iSCSI target
-    let media_barcodes: Vec<String> = config.library.media.iter().map(|m| m.barcode.clone()).collect();
+    let media_barcodes: Vec<String> = config
+        .library
+        .media
+        .iter()
+        .map(|m| m.barcode.clone())
+        .collect();
 
     // Create tape drives and collect notification handles for the changer
     let data_dir = std::path::PathBuf::from(&config.library.data_dir);
@@ -84,7 +89,11 @@ async fn main() -> anyhow::Result<()> {
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone()));
+        let drive = Arc::new(TapeDrive::new(
+            &serial,
+            LtoGeneration::Lto9,
+            data_dir.clone(),
+        ));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
     }

@@ -26,7 +26,7 @@ use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
 pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
-use media::tape::{DriveMediaState, TapeMedia};
+use media::tape::{DriveMediaState, RecordDescriptor, TapeMedia};
 use mode_pages::{ModePageRegistry, SharedPartitionState};
 use snapshot::{DriveActivity, DriveSnapshot};
 
@@ -90,8 +90,8 @@ impl TapeDrive {
         let product_bytes = product.as_bytes();
         let copy_len = product_bytes.len().min(16);
         inq[16..16 + copy_len].copy_from_slice(&product_bytes[..copy_len]);
-        for i in 16 + copy_len..32 {
-            inq[i] = 0x20; // space-pad
+        for item in inq.iter_mut().take(32).skip(16 + copy_len) {
+            *item = 0x20; // space-pad
         }
         // Bytes 32-35: Product revision level
         inq[32..36].copy_from_slice(revision.as_bytes());
@@ -511,14 +511,14 @@ impl ScsiDevice for TapeDrive {
                 let wp = st
                     .media_state
                     .as_ref()
-                    .map_or(false, |ms| ms.media.write_protected);
+                    .is_some_and(|ms| ms.media.write_protected);
                 return commands::mode::handle_mode_sense_6(cdb, &self.mode_pages, wp);
             }
             MODE_SENSE_10 => {
                 let wp = st
                     .media_state
                     .as_ref()
-                    .map_or(false, |ms| ms.media.write_protected);
+                    .is_some_and(|ms| ms.media.write_protected);
                 return commands::mode::handle_mode_sense_10(cdb, &self.mode_pages, wp);
             }
             MODE_SELECT_6 => {

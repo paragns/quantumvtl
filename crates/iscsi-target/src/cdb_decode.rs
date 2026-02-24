@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::scsi_log::{DeviceType, ScsiLogEntry, opcode_name, scsi_status_name};
+use crate::scsi_log::{opcode_name, scsi_status_name, DeviceType, ScsiLogEntry};
 
 /// Structured breakdown of a CDB (Command Descriptor Block).
 #[derive(Debug, Clone, Serialize)]
@@ -130,7 +130,12 @@ fn common_cdb_fields(opcode: u8, cdb: &[u8]) -> Option<Vec<CdbField>> {
                     byte_offset: 1,
                     bit_range: Some("0".into()),
                     hex_value: format!("{:02X}", evpd),
-                    decoded: if evpd != 0 { "VPD page requested" } else { "Standard inquiry" }.into(),
+                    decoded: if evpd != 0 {
+                        "VPD page requested"
+                    } else {
+                        "Standard inquiry"
+                    }
+                    .into(),
                 });
             }
             if cdb.len() >= 3 {
@@ -343,8 +348,7 @@ fn decode_smc_cdb(opcode: u8, cdb: &[u8]) -> Vec<CdbField> {
                 let elem_type = (cdb[1] >> 4) & 0x0F;
                 let start = u16::from_be_bytes([cdb[2], cdb[3]]);
                 let count = u16::from_be_bytes([cdb[4], cdb[5]]);
-                let alloc_len =
-                    ((cdb[7] as u32) << 16) | ((cdb[8] as u32) << 8) | (cdb[9] as u32);
+                let alloc_len = ((cdb[7] as u32) << 16) | ((cdb[8] as u32) << 8) | (cdb[9] as u32);
                 f.push(CdbField {
                     name: "Element Type".into(),
                     byte_offset: 1,
@@ -401,7 +405,12 @@ fn decode_ssc_cdb(opcode: u8, cdb: &[u8]) -> Vec<CdbField> {
                     byte_offset: 1,
                     bit_range: Some("0".into()),
                     hex_value: format!("{}", u8::from(fixed)),
-                    decoded: if fixed { "Fixed-length blocks" } else { "Variable-length" }.into(),
+                    decoded: if fixed {
+                        "Fixed-length blocks"
+                    } else {
+                        "Variable-length"
+                    }
+                    .into(),
                 });
                 f.push(CdbField {
                     name: "Transfer Length".into(),
@@ -429,7 +438,12 @@ fn decode_ssc_cdb(opcode: u8, cdb: &[u8]) -> Vec<CdbField> {
                     byte_offset: 1,
                     bit_range: Some("0".into()),
                     hex_value: format!("{}", u8::from(fixed)),
-                    decoded: if fixed { "Fixed-length blocks" } else { "Variable-length" }.into(),
+                    decoded: if fixed {
+                        "Fixed-length blocks"
+                    } else {
+                        "Variable-length"
+                    }
+                    .into(),
                 });
                 f.push(CdbField {
                     name: "Transfer Length".into(),
@@ -449,8 +463,7 @@ fn decode_ssc_cdb(opcode: u8, cdb: &[u8]) -> Vec<CdbField> {
         0x10 => {
             let mut f = vec![opcode_field(cdb)];
             if cdb.len() >= 5 {
-                let count =
-                    ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
+                let count = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
                 f.push(CdbField {
                     name: "Filemark Count".into(),
                     byte_offset: 2,
@@ -466,8 +479,7 @@ fn decode_ssc_cdb(opcode: u8, cdb: &[u8]) -> Vec<CdbField> {
             let mut f = vec![opcode_field(cdb)];
             if cdb.len() >= 5 {
                 let code = cdb[1] & 0x07;
-                let count_raw =
-                    ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
+                let count_raw = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
                 // Sign-extend 24-bit value
                 let count = if count_raw & 0x800000 != 0 {
                     count_raw | 0xFF000000
@@ -696,7 +708,10 @@ fn space_code_name(code: u8) -> &'static str {
 }
 
 fn hex_string(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ")
+    data.iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -715,7 +730,9 @@ mod tests {
 
     #[test]
     fn decode_move_medium_cdb() {
-        let cdb = [0xA5, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let cdb = [
+            0xA5, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let bd = decode_cdb(&cdb, DeviceType::MediaChanger);
         assert_eq!(bd.opcode_name, "MOVE MEDIUM");
         assert!(bd.fields.iter().any(|f| f.name == "Source Address"));
@@ -734,7 +751,9 @@ mod tests {
     #[test]
     fn decode_sense_data() {
         // Fixed-format sense: sense key 0x05 (ILLEGAL REQUEST), ASC 0x24, ASCQ 0x00
-        let sense = [0x70, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00];
+        let sense = [
+            0x70, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x24, 0x00,
+        ];
         let sb = decode_sense(&sense);
         assert_eq!(sb.sense_key, 0x05);
         assert_eq!(sb.sense_key_name, "ILLEGAL REQUEST");

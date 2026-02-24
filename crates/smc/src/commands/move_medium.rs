@@ -6,7 +6,7 @@ use iscsi_target::{MediaLoadNotify, ScsiResult};
 use tracing::trace;
 
 use crate::sense::{self, SenseBuilder};
-use crate::state::{ChangerState, ELEM_DTE, ELEM_IEE, ELEM_MTE, MediumType};
+use crate::state::{ChangerState, MediumType, ELEM_DTE, ELEM_IEE, ELEM_MTE};
 
 /// Handle MOVE MEDIUM (A5h).
 pub fn handle_move_medium(

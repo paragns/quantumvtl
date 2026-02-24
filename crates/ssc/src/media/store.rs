@@ -76,7 +76,7 @@ impl TapeStore {
         let data_path = data_dir.join(format!("{}.data", barcode));
 
         let db = Database::create(&db_path).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("redb create failed: {}", e))
+            io::Error::other(format!("redb create failed: {}", e))
         })?;
 
         let mut data_file = OpenOptions::new()
@@ -134,21 +134,21 @@ impl TapeStore {
         desc: &RecordDescriptor,
     ) -> io::Result<()> {
         let encoded =
-            bincode::serialize(desc).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(desc).map_err(io::Error::other)?;
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             let mut table = txn
                 .open_table(RECORDS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             table
                 .insert((partition, index), encoded.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -157,15 +157,15 @@ impl TapeStore {
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             let mut table = txn
                 .open_table(RECORDS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             // Collect keys to remove (can't mutate while iterating)
             let keys: Vec<(u32, u64)> = table
                 .range((partition, from_index)..=(partition, u64::MAX))
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                .map_err(io::Error::other)?
                 .map(|entry| {
                     let (k, _) = entry.unwrap();
                     (k.value().0, k.value().1)
@@ -174,11 +174,11 @@ impl TapeStore {
             for key in keys {
                 table
                     .remove(key)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
             }
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -187,20 +187,20 @@ impl TapeStore {
         let txn = self
             .db
             .begin_read()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         let table = match txn.open_table(RECORDS) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => return Err(io::Error::other(e)),
         };
         let mut records = Vec::new();
         let iter = table
             .range((partition, 0)..=(partition, u64::MAX))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         for entry in iter {
-            let (_, v) = entry.map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let (_, v) = entry.map_err(io::Error::other)?;
             let desc: RecordDescriptor = bincode::deserialize(v.value())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             records.push(desc);
         }
         Ok(records)
@@ -222,21 +222,21 @@ impl TapeStore {
             partition_count: media.partitions.len() as u32,
         };
         let encoded =
-            bincode::serialize(&meta).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(&meta).map_err(io::Error::other)?;
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             let mut table = txn
                 .open_table(MEDIA_META)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             table
                 .insert("meta", encoded.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -245,20 +245,20 @@ impl TapeStore {
         let txn = self
             .db
             .begin_read()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         let table = match txn.open_table(MEDIA_META) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
-            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => return Err(io::Error::other(e)),
         };
         match table.get("meta") {
             Ok(Some(v)) => {
                 let meta: MediaMeta = bincode::deserialize(v.value())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
                 Ok(Some(meta))
             }
             Ok(None) => Ok(None),
-            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => Err(io::Error::other(e)),
         }
     }
 
@@ -273,21 +273,21 @@ impl TapeStore {
             bytes_read_compressed: partition.bytes_read_compressed,
         };
         let encoded =
-            bincode::serialize(&stats).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(&stats).map_err(io::Error::other)?;
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             let mut table = txn
                 .open_table(PARTITION_META)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             table
                 .insert(idx, encoded.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -296,20 +296,20 @@ impl TapeStore {
         let txn = self
             .db
             .begin_read()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         let table = match txn.open_table(PARTITION_META) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(PartitionStats::default()),
-            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => return Err(io::Error::other(e)),
         };
         match table.get(idx) {
             Ok(Some(v)) => {
                 let stats: PartitionStats = bincode::deserialize(v.value())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
                 Ok(stats)
             }
             Ok(None) => Ok(PartitionStats::default()),
-            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => Err(io::Error::other(e)),
         }
     }
 
@@ -318,21 +318,21 @@ impl TapeStore {
     /// Persist all MAM attributes to the redb store as a single blob.
     pub fn save_mam(&self, mam: &MamAttributes) -> io::Result<()> {
         let encoded =
-            bincode::serialize(mam).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            bincode::serialize(mam).map_err(io::Error::other)?;
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             let mut table = txn
                 .open_table(MAM)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             table
                 .insert("mam", encoded.as_slice())
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -341,20 +341,20 @@ impl TapeStore {
         let txn = self
             .db
             .begin_read()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         let table = match txn.open_table(MAM) {
             Ok(t) => t,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(MamAttributes::default()),
-            Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => return Err(io::Error::other(e)),
         };
         match table.get("mam") {
             Ok(Some(v)) => {
                 let mam: MamAttributes = bincode::deserialize(v.value())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
                 Ok(mam)
             }
             Ok(None) => Ok(MamAttributes::default()),
-            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e)),
+            Err(e) => Err(io::Error::other(e)),
         }
     }
 
@@ -370,14 +370,14 @@ impl TapeStore {
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             // Delete and recreate the table to clear it efficiently
             txn.delete_table(RECORDS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 
@@ -386,13 +386,13 @@ impl TapeStore {
         let txn = self
             .db
             .begin_write()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         {
             txn.delete_table(PARTITION_META)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
         }
         txn.commit()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         Ok(())
     }
 }

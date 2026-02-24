@@ -112,13 +112,14 @@ pub trait LogPage: Send + Sync {
 }
 
 /// Registry of log pages with dispatch methods.
+#[derive(Default)]
 pub struct LogPageRegistry {
     pages: Vec<Box<dyn LogPage>>,
 }
 
 impl LogPageRegistry {
     pub fn new() -> Self {
-        Self { pages: Vec::new() }
+        Self::default()
     }
 
     /// Register a log page implementation.

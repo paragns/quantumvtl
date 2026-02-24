@@ -219,8 +219,7 @@ impl Pdu {
         reader.read_exact(&mut bhs).await?;
 
         let ahs_len = (bhs[4] as usize) * 4;
-        let data_len =
-            ((bhs[5] as usize) << 16) | ((bhs[6] as usize) << 8) | (bhs[7] as usize);
+        let data_len = ((bhs[5] as usize) << 16) | ((bhs[6] as usize) << 8) | (bhs[7] as usize);
         let total_payload = ahs_len + data_len;
         // Pad to 4-byte boundary
         let padded = (total_payload + 3) & !3;
@@ -362,13 +361,7 @@ pub fn build_scsi_response(
 }
 
 /// Build a NOP-In PDU (response to NOP-Out).
-pub fn build_nop_in(
-    itt: u32,
-    ttt: u32,
-    stat_sn: u32,
-    exp_cmd_sn: u32,
-    max_cmd_sn: u32,
-) -> Pdu {
+pub fn build_nop_in(itt: u32, ttt: u32, stat_sn: u32, exp_cmd_sn: u32, max_cmd_sn: u32) -> Pdu {
     let mut pdu = Pdu::new();
     pdu.set_opcode(OPCODE_NOP_IN);
     pdu.set_flags(0x80); // F=1
@@ -381,16 +374,11 @@ pub fn build_nop_in(
 }
 
 /// Build a Logout Response PDU.
-pub fn build_logout_response(
-    itt: u32,
-    stat_sn: u32,
-    exp_cmd_sn: u32,
-    max_cmd_sn: u32,
-) -> Pdu {
+pub fn build_logout_response(itt: u32, stat_sn: u32, exp_cmd_sn: u32, max_cmd_sn: u32) -> Pdu {
     let mut pdu = Pdu::new();
     pdu.set_opcode(OPCODE_LOGOUT_RESP);
     pdu.set_flags(0x80); // F=1
-    // Response: 0 = connection/session closed successfully
+                         // Response: 0 = connection/session closed successfully
     pdu.bhs[2] = 0x00;
     pdu.set_itt(itt);
     pdu.set_stat_sn(stat_sn);
@@ -402,6 +390,7 @@ pub fn build_logout_response(
 /// Build an R2T (Ready to Transfer) PDU.
 ///
 /// Solicits Data-Out PDUs from the initiator for write commands.
+#[allow(clippy::too_many_arguments)]
 pub fn build_r2t(
     lun: u64,
     itt: u32,
