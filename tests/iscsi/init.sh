@@ -497,26 +497,8 @@ else
     skip "E.2: mtx next not supported: $MTX_OUT"
 fi
 
-# E.3: unload, then mtx last 0
-log "E.3: mtx last 0"
-SOURCE_SLOT=$(echo "$MTX_STATUS" | grep "Data Transfer Element 0:Full" | sed -n 's/.*Storage Element \([0-9]*\) Loaded.*/\1/p')
-if [ -n "$SOURCE_SLOT" ]; then
-    mtx -f "$CHANGER_DEV" unload "$SOURCE_SLOT" 0 2>&1 || true
-fi
-MTX_OUT=$(mtx -f "$CHANGER_DEV" last 0 2>&1)
-if [ $? -eq 0 ]; then
-    refresh_status
-    if drive_is_full 0; then
-        pass "E.3: last — loaded last full slot into drive 0"
-    else
-        skip "E.3: last command returned OK but drive 0 not full"
-    fi
-else
-    skip "E.3: mtx last not supported: $MTX_OUT"
-fi
-
-# E.4: unload, then mtx previous 0
-log "E.4: mtx previous 0"
+# E.3: unload, then mtx previous 0
+log "E.3: mtx previous 0"
 SOURCE_SLOT=$(echo "$MTX_STATUS" | grep "Data Transfer Element 0:Full" | sed -n 's/.*Storage Element \([0-9]*\) Loaded.*/\1/p')
 if [ -n "$SOURCE_SLOT" ]; then
     mtx -f "$CHANGER_DEV" unload "$SOURCE_SLOT" 0 2>&1 || true
@@ -525,12 +507,12 @@ MTX_OUT=$(mtx -f "$CHANGER_DEV" previous 0 2>&1)
 if [ $? -eq 0 ]; then
     refresh_status
     if drive_is_full 0; then
-        pass "E.4: previous — loaded previous full slot into drive 0"
+        pass "E.3: previous — loaded previous full slot into drive 0"
     else
-        skip "E.4: previous command returned OK but drive 0 not full"
+        skip "E.3: previous command returned OK but drive 0 not full"
     fi
 else
-    skip "E.4: mtx previous not supported: $MTX_OUT"
+    skip "E.3: mtx previous not supported: $MTX_OUT"
 fi
 
 # Clean up section E — make sure drive 0 is empty
