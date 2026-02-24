@@ -3,7 +3,7 @@
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
-use tracing::{info, warn};
+use tracing::{trace, warn};
 
 /// Compress and write a single block to the store.
 ///
@@ -126,7 +126,7 @@ pub fn handle_write_6(
         media_state.position.block_number += 1;
     }
 
-    info!(
+    trace!(
         partition = media_state.position.partition,
         position = media_state.position.block_number,
         total_records = media_state.current_partition().records.len(),
