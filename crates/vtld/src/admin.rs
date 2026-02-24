@@ -1264,8 +1264,11 @@ async fn get_simulation_speed(
     State(state): State<AdminState>,
 ) -> Json<SimulationSpeedResponse> {
     let factor = state.simulation_clock.speed_factor();
+    // JSON cannot represent Infinity; use a large finite sentinel that the frontend
+    // maps to the "Instant" slider position.
+    let json_factor = if factor.is_infinite() { 1e18 } else { factor };
     Json(SimulationSpeedResponse {
-        speed_factor: factor,
+        speed_factor: json_factor,
         label: speed_label(factor),
     })
 }
@@ -1283,8 +1286,9 @@ async fn set_simulation_speed(
     };
     state.simulation_clock.set_speed_factor(factor);
     let _ = state.ws_tx.send(());
+    let json_factor = if factor.is_infinite() { 1e18 } else { factor };
     Json(SimulationSpeedResponse {
-        speed_factor: factor,
+        speed_factor: json_factor,
         label: speed_label(factor),
     })
 }
