@@ -232,6 +232,7 @@ impl TapeDrive {
                     match rec {
                         RecordDescriptor::Filemark => filemark_positions.push(i as u64),
                         RecordDescriptor::Data { length, .. } => data_record_sizes.push(*length),
+                        RecordDescriptor::CompressedData { compressed_length, .. } => data_record_sizes.push(*compressed_length),
                     }
                 }
                 PartitionDetail {
@@ -264,7 +265,7 @@ impl TapeDrive {
             capacity_used_pct: m.capacity_used_fraction() * 100.0,
             approximate_remaining_mb: m.approximate_remaining_mb(),
             compression_enabled: m.compression_enabled,
-            compression_ratio: m.compression_ratio,
+            compression_ratio: m.compression_ratio(),
             total_loads: m.total_loads,
             optimization_done: m.optimization_done,
             partitions,
