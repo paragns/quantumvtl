@@ -435,15 +435,15 @@ impl TapeMedia {
 pub struct DriveMediaState {
     pub media: TapeMedia,
     pub position: LogicalPosition,
-    pub store: super::store::TapeStore,
+    pub io_handle: crate::io_engine::IoHandle,
 }
 
 impl DriveMediaState {
-    pub fn new(media: TapeMedia, store: super::store::TapeStore) -> Self {
+    pub fn new(media: TapeMedia, io_handle: crate::io_engine::IoHandle) -> Self {
         Self {
             media,
             position: LogicalPosition::default(),
-            store,
+            io_handle,
         }
     }
 

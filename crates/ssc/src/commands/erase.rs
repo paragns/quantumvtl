@@ -24,10 +24,10 @@ pub fn handle_erase(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult
         media_state.position.file_number = 0;
 
         // Clear store
-        if let Err(e) = media_state.store.clear_partition_records(partition_idx) {
+        if let Err(e) = media_state.io_handle.clear_partition_records_sync(partition_idx) {
             warn!(error = %e, "failed to clear partition records in store");
         }
-        if let Err(e) = media_state.store.truncate_data(0) {
+        if let Err(e) = media_state.io_handle.truncate_sync(0) {
             warn!(error = %e, "failed to truncate data file");
         }
 
@@ -43,24 +43,30 @@ pub fn handle_erase(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult
             use crate::media::tape::RecordDescriptor;
             let mut max_end: u64 = 0;
             for rec in &partition.records[..pos] {
-                if let RecordDescriptor::Data { offset, length } = rec {
-                    let end = offset + *length as u64;
-                    if end > max_end {
-                        max_end = end;
+                match rec {
+                    RecordDescriptor::Data { offset, length } => {
+                        let end = offset + *length as u64;
+                        if end > max_end {
+                            max_end = end;
+                        }
                     }
+                    RecordDescriptor::CompressedData { offset, compressed_length, .. } => {
+                        let end = offset + *compressed_length as u64;
+                        if end > max_end {
+                            max_end = end;
+                        }
+                    }
+                    RecordDescriptor::Filemark => {}
                 }
             }
 
             partition.records.truncate(pos);
             partition.rebuild_filemark_index();
 
-            if let Err(e) = media_state
-                .store
-                .remove_records_from(partition_idx, pos as u64)
-            {
+            if let Err(e) = media_state.io_handle.remove_records_from_sync(partition_idx, pos as u64) {
                 warn!(error = %e, "failed to remove records from store");
             }
-            if let Err(e) = media_state.store.truncate_data(max_end) {
+            if let Err(e) = media_state.io_handle.truncate_sync(max_end) {
                 warn!(error = %e, "failed to truncate data file");
             }
         }
@@ -116,13 +122,13 @@ pub fn handle_format_medium(
     media_state.position.partition = 0;
 
     // Clear store
-    if let Err(e) = media_state.store.clear_all_records() {
+    if let Err(e) = media_state.io_handle.clear_all_records_sync() {
         warn!(error = %e, "failed to clear all records in store");
     }
-    if let Err(e) = media_state.store.truncate_data(0) {
+    if let Err(e) = media_state.io_handle.truncate_sync(0) {
         warn!(error = %e, "failed to truncate data file");
     }
-    if let Err(e) = media_state.store.clear_all_partition_stats() {
+    if let Err(e) = media_state.io_handle.clear_all_partition_stats_sync() {
         warn!(error = %e, "failed to clear partition stats in store");
     }
 
@@ -133,7 +139,7 @@ pub fn handle_format_medium(
     }
 
     // Persist updated media meta (includes new partition count)
-    if let Err(e) = media_state.store.save_media_meta(&media_state.media) {
+    if let Err(e) = media_state.io_handle.save_media_meta_sync(&media_state.media) {
         warn!(error = %e, "failed to persist media metadata after FORMAT MEDIUM");
     }
 

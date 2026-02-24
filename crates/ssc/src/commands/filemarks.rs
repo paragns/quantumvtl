@@ -1,12 +1,17 @@
 //! WRITE FILEMARKS command handler.
 
+use crate::buffer::DriveBuffer;
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
 /// Handle WRITE FILEMARKS(6) (10h) — CDB[2-4]=count.
-pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_write_filemarks(
+    cdb: &[u8],
+    media_state: &mut DriveMediaState,
+    buffer: &mut Option<DriveBuffer>,
+) -> ScsiResult {
     let count = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
 
     if media_state.media.write_protected {
@@ -15,8 +20,15 @@ pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> 
 
     // Count=0 means flush buffer without writing filemarks
     if count == 0 {
-        // TODO: flush write buffer when buffering is implemented
+        if let Some(ref mut buf) = buffer {
+            buf.flush();
+        }
         return sense::good();
+    }
+
+    // Flush buffer before writing filemarks (immed=0 behavior)
+    if let Some(ref mut buf) = buffer {
+        buf.flush();
     }
 
     let pos = media_state.position.block_number as usize;
@@ -28,10 +40,7 @@ pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> 
         partition.records.truncate(pos);
     }
     // Remove truncated records from store
-    if let Err(e) = media_state
-        .store
-        .remove_records_from(partition_idx, pos as u64)
-    {
+    if let Err(e) = media_state.io_handle.remove_records_from_sync(partition_idx, pos as u64) {
         warn!(error = %e, "failed to remove truncated records from store");
     }
 
@@ -39,10 +48,7 @@ pub fn handle_write_filemarks(cdb: &[u8], media_state: &mut DriveMediaState) -> 
         let desc = RecordDescriptor::Filemark;
         let record_num = media_state.current_partition().records.len() as u64;
 
-        if let Err(e) = media_state
-            .store
-            .save_record(partition_idx, record_num, &desc)
-        {
+        if let Err(e) = media_state.io_handle.save_record_sync(partition_idx, record_num, &desc) {
             warn!(error = %e, "failed to save filemark record to store");
             return SenseBuilder::medium_error().to_check_condition();
         }

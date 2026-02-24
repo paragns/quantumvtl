@@ -1,12 +1,19 @@
 //! READ(6) command handler.
 
+use crate::buffer::DriveBuffer;
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
+use crate::timing::SimulationClock;
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
 /// Handle READ(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
-pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_read_6(
+    cdb: &[u8],
+    media_state: &mut DriveMediaState,
+    buffer: &mut Option<DriveBuffer>,
+    clock: &SimulationClock,
+) -> ScsiResult {
     let _sili = cdb[1] & 0x02 != 0;
     let fixed = cdb[1] & 0x01 != 0;
     let transfer_length = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
@@ -37,10 +44,15 @@ pub fn handle_read_6(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResul
         return SenseBuilder::filemark_detected().to_check_condition();
     }
 
+    // Start read-ahead on first read
+    if let Some(ref mut buf) = buffer {
+        buf.begin_read_ahead();
+    }
+
     if fixed {
-        handle_read_fixed(transfer_length, media_state)
+        handle_read_fixed(transfer_length, media_state, buffer, clock)
     } else {
-        handle_read_variable(transfer_length, media_state)
+        handle_read_variable(transfer_length, media_state, buffer, clock)
     }
 }
 
@@ -51,7 +63,7 @@ fn read_record_data(
 ) -> Result<Vec<u8>, ScsiResult> {
     match desc {
         RecordDescriptor::Data { offset, length } => {
-            ms.store.read_data(*offset, *length).map_err(|e| {
+            ms.io_handle.read_sync(*offset, *length).map_err(|e| {
                 warn!(error = %e, "failed to read data from tape store");
                 SenseBuilder::medium_error().to_check_condition()
             })
@@ -61,13 +73,10 @@ fn read_record_data(
             compressed_length,
             ..
         } => {
-            let compressed = ms
-                .store
-                .read_data(*offset, *compressed_length)
-                .map_err(|e| {
-                    warn!(error = %e, "failed to read compressed data from tape store");
-                    SenseBuilder::medium_error().to_check_condition()
-                })?;
+            let compressed = ms.io_handle.read_sync(*offset, *compressed_length).map_err(|e| {
+                warn!(error = %e, "failed to read compressed data from tape store");
+                SenseBuilder::medium_error().to_check_condition()
+            })?;
             zstd::decode_all(compressed.as_slice()).map_err(|e| {
                 warn!(error = %e, "failed to decompress tape record");
                 SenseBuilder::medium_error().to_check_condition()
@@ -77,7 +86,12 @@ fn read_record_data(
     }
 }
 
-fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
+fn handle_read_fixed(
+    block_count: u32,
+    ms: &mut DriveMediaState,
+    buffer: &mut Option<DriveBuffer>,
+    clock: &SimulationClock,
+) -> ScsiResult {
     // Get the native block size from the first block we'll read
     let first_pos = ms.position.block_number as usize;
     let block_size = ms.current_partition().records[first_pos].native_byte_len() as usize;
@@ -113,6 +127,15 @@ fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
         part.bytes_read_compressed += on_disk_bytes;
         ms.position.block_number += 1;
         blocks_read += 1;
+
+        // Buffer simulation: account for this read
+        if let Some(ref mut buf) = buffer {
+            let stall = buf.record_read(native_bytes as usize, clock);
+            if !stall.is_zero() {
+                std::thread::sleep(clock.scale_duration(stall));
+                buf.tick(clock);
+            }
+        }
     }
 
     if blocks_read < block_count {
@@ -125,7 +148,12 @@ fn handle_read_fixed(block_count: u32, ms: &mut DriveMediaState) -> ScsiResult {
     sense::good_with_data(data)
 }
 
-fn handle_read_variable(max_bytes: u32, ms: &mut DriveMediaState) -> ScsiResult {
+fn handle_read_variable(
+    max_bytes: u32,
+    ms: &mut DriveMediaState,
+    buffer: &mut Option<DriveBuffer>,
+    clock: &SimulationClock,
+) -> ScsiResult {
     let pos = ms.position.block_number as usize;
 
     // Clone the descriptor to avoid borrow conflict
@@ -141,6 +169,15 @@ fn handle_read_variable(max_bytes: u32, ms: &mut DriveMediaState) -> ScsiResult 
     part.bytes_read_native += native_bytes;
     part.bytes_read_compressed += on_disk_bytes;
     ms.position.block_number += 1;
+
+    // Buffer simulation: account for this read
+    if let Some(ref mut buf) = buffer {
+        let stall = buf.record_read(native_bytes as usize, clock);
+        if !stall.is_zero() {
+            std::thread::sleep(clock.scale_duration(stall));
+            buf.tick(clock);
+        }
+    }
 
     let mut result_data = block_data;
     if result_data.len() > max_bytes as usize {

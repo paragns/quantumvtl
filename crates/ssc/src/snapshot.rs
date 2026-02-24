@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use crate::buffer::SpeedTimeEntry;
 use crate::media::geometry::LtoGeneration;
 
 /// What the drive is currently doing.
@@ -98,6 +99,22 @@ pub struct DriveSnapshot {
     pub total_loads: u32,
     pub motion_hours: f64,
 
+    // --- Buffer detail ---
+    pub buffer_capacity_bytes: usize,
+    pub buffer_used_bytes: usize,
+    pub read_cache_bytes: usize,
+    pub tape_velocity_pct: Option<f64>,
+    pub host_rate_bytes_sec: Option<u64>,
+    pub tape_rate_bytes_sec: Option<u64>,
+    pub speed_change_count: u32,
+    pub buffer_backhitch_count: u32,
+    pub high_water_mark_pct: f64,
+    pub stall_time_secs: f64,
+    pub speed_time_distribution: Option<Vec<SpeedTimeEntry>>,
+    pub tape_efficiency_pct: Option<f64>,
+    pub write_cycle_count: u32,
+    pub read_cycle_count: u32,
+
     // --- Legacy fields for backward compat (used by current admin API) ---
     pub position: usize,
     pub record_count: usize,
@@ -137,6 +154,20 @@ impl DriveSnapshot {
             approximate_remaining_mb: None,
             total_loads: 0,
             motion_hours: 0.0,
+            buffer_capacity_bytes: 0,
+            buffer_used_bytes: 0,
+            read_cache_bytes: 0,
+            tape_velocity_pct: None,
+            host_rate_bytes_sec: None,
+            tape_rate_bytes_sec: None,
+            speed_change_count: 0,
+            buffer_backhitch_count: 0,
+            high_water_mark_pct: 0.0,
+            stall_time_secs: 0.0,
+            speed_time_distribution: None,
+            tape_efficiency_pct: None,
+            write_cycle_count: 0,
+            read_cycle_count: 0,
             position: 0,
             record_count: 0,
         }

@@ -1,11 +1,13 @@
 //! WRITE(6) command handler.
 
+use crate::buffer::DriveBuffer;
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
+use crate::timing::SimulationClock;
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
-/// Compress and write a single block to the store.
+/// Compress and write a single block to the store via the I/O handle.
 ///
 /// Matches real LTO drive behavior: when DCE=1, every block is compressed
 /// and stored as `CompressedData` regardless of whether compression reduced
@@ -13,37 +15,39 @@ use tracing::{trace, warn};
 ///
 /// Returns `(descriptor, native_bytes, on_disk_bytes)`.
 fn write_block(
-    store: &mut crate::media::store::TapeStore,
+    io_handle: &crate::io_engine::IoHandle,
     block: &[u8],
     compress: bool,
+    partition: u32,
+    record_num: u64,
 ) -> Result<(RecordDescriptor, u64, u64), ScsiResult> {
     let native_len = block.len() as u32;
 
-    if compress {
-        // Real LTO drives always run the compression engine when DCE=1.
+    let (data, is_compressed) = if compress {
         let compressed = zstd::encode_all(block, -3).map_err(|e| {
             warn!(error = %e, "zstd compression failed");
             SenseBuilder::medium_error().to_check_condition()
         })?;
-        let compressed_length = compressed.len() as u32;
-        let (offset, _) = store.append_data(&compressed).map_err(|e| {
-            warn!(error = %e, "failed to append compressed data to tape store");
-            SenseBuilder::medium_error().to_check_condition()
-        })?;
-        let desc = RecordDescriptor::CompressedData {
-            offset,
-            compressed_length,
-            native_length: native_len,
-        };
-        Ok((desc, native_len as u64, compressed_length as u64))
+        (compressed, true)
     } else {
-        let (offset, length) = store.append_data(block).map_err(|e| {
-            warn!(error = %e, "failed to append data to tape store");
-            SenseBuilder::medium_error().to_check_condition()
-        })?;
-        let desc = RecordDescriptor::Data { offset, length };
-        Ok((desc, native_len as u64, native_len as u64))
-    }
+        (block.to_vec(), false)
+    };
+
+    let writes = vec![crate::io_engine::IoWrite {
+        data,
+        native_length: native_len,
+        is_compressed,
+        partition,
+        record_num,
+    }];
+
+    let mut results = io_handle.write_batch(writes).map_err(|e| {
+        warn!(error = %e, "failed to write block to tape store");
+        SenseBuilder::medium_error().to_check_condition()
+    })?;
+
+    let r = results.remove(0);
+    Ok((r.descriptor, r.native_bytes, r.on_disk_bytes))
 }
 
 /// Handle WRITE(6) — CDB[1] bit 0=FIXED, CDB[2-4]=transfer length.
@@ -51,6 +55,8 @@ pub fn handle_write_6(
     cdb: &[u8],
     data_out: &[u8],
     media_state: &mut DriveMediaState,
+    buffer: &mut Option<DriveBuffer>,
+    clock: &SimulationClock,
 ) -> ScsiResult {
     let fixed = cdb[1] & 0x01 != 0;
     let transfer_length = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
@@ -96,25 +102,26 @@ pub fn handle_write_6(
                 let end = start + block_size;
                 let block = &data_out[start..end];
 
+                let record_num = media_state.current_partition().records.len() as u64;
                 let (desc, native_bytes, on_disk_bytes) =
-                    match write_block(&mut media_state.store, block, compression_enabled) {
+                    match write_block(&media_state.io_handle, block, compression_enabled, partition_idx, record_num) {
                         Ok(r) => r,
                         Err(scsi_err) => return scsi_err,
                     };
-
-                let record_num = media_state.current_partition().records.len() as u64;
-                if let Err(e) = media_state
-                    .store
-                    .save_record(partition_idx, record_num, &desc)
-                {
-                    warn!(error = %e, "failed to save record index");
-                    return SenseBuilder::medium_error().to_check_condition();
-                }
 
                 let partition = media_state.current_partition_mut();
                 partition.records.push(desc);
                 partition.bytes_written_native += native_bytes;
                 partition.bytes_written_compressed += on_disk_bytes;
+
+                // Buffer simulation: account for this write
+                if let Some(ref mut buf) = buffer {
+                    let stall = buf.accept_write(native_bytes as usize, clock);
+                    if !stall.is_zero() {
+                        std::thread::sleep(clock.scale_duration(stall));
+                        buf.tick(clock);
+                    }
+                }
             }
             media_state.position.block_number += transfer_length as u64;
         }
@@ -133,26 +140,27 @@ pub fn handle_write_6(
             return SenseBuilder::volume_overflow().to_check_condition();
         }
 
+        let record_num = media_state.current_partition().records.len() as u64;
         let (desc, native_bytes, on_disk_bytes) =
-            match write_block(&mut media_state.store, data_out, compression_enabled) {
+            match write_block(&media_state.io_handle, data_out, compression_enabled, partition_idx, record_num) {
                 Ok(r) => r,
                 Err(scsi_err) => return scsi_err,
             };
-
-        let record_num = media_state.current_partition().records.len() as u64;
-        if let Err(e) = media_state
-            .store
-            .save_record(partition_idx, record_num, &desc)
-        {
-            warn!(error = %e, "failed to save record index");
-            return SenseBuilder::medium_error().to_check_condition();
-        }
 
         let partition = media_state.current_partition_mut();
         partition.records.push(desc);
         partition.bytes_written_native += native_bytes;
         partition.bytes_written_compressed += on_disk_bytes;
         media_state.position.block_number += 1;
+
+        // Buffer simulation: account for this write
+        if let Some(ref mut buf) = buffer {
+            let stall = buf.accept_write(native_bytes as usize, clock);
+            if !stall.is_zero() {
+                std::thread::sleep(clock.scale_duration(stall));
+                buf.tick(clock);
+            }
+        }
     }
 
     trace!(
@@ -175,10 +183,7 @@ fn truncate_at_position(media_state: &mut DriveMediaState, pos: usize, partition
         partition.rebuild_filemark_index();
 
         // Remove redb record entries from the truncation point onward
-        if let Err(e) = media_state
-            .store
-            .remove_records_from(partition_idx, pos as u64)
-        {
+        if let Err(e) = media_state.io_handle.remove_records_from_sync(partition_idx, pos as u64) {
             warn!(error = %e, "failed to remove truncated records from store");
         }
 
@@ -213,7 +218,7 @@ fn truncate_at_position(media_state: &mut DriveMediaState, pos: usize, partition
             } else {
                 0
             };
-            if let Err(e) = media_state.store.truncate_data(data_truncate_len) {
+            if let Err(e) = media_state.io_handle.truncate_sync(data_truncate_len) {
                 warn!(error = %e, "failed to truncate data file");
             }
         }

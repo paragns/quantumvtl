@@ -10,7 +10,8 @@ use iscsi_target::SessionRegistry;
 use smc::MediaChanger;
 use ssc::media::geometry::LtoGeneration;
 use ssc::TapeDrive;
-use vtld::admin::{run_admin_server, AdminState};
+use ssc::timing::SimulationClock;
+use vtld::admin::{AdminState, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
 
@@ -85,17 +86,29 @@ async fn main() -> anyhow::Result<()> {
 
     // Create tape drives and collect notification handles for the changer
     let data_dir = std::path::PathBuf::from(&config.library.data_dir);
+    let clock = SimulationClock::realtime();
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(
-            &serial,
-            LtoGeneration::Lto9,
-            data_dir.clone(),
-        ));
+        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone(), clock.clone()));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
+    }
+
+    // Spawn background buffer ticker per drive (4 Hz)
+    for drive in &drive_arcs {
+        let drive = drive.clone();
+        let ws_tx = ws_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                interval.tick().await;
+                if drive.tick_buffer() {
+                    let _ = ws_tx.send(());
+                }
+            }
+        });
     }
 
     let changer = Arc::new(MediaChanger::new(

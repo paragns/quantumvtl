@@ -194,6 +194,14 @@ struct ElementDetailResponse {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+struct SpeedTimeEntryResponse {
+    speed_index: u8,
+    rate_mbps: f64,
+    time_secs: f64,
+    time_pct: f64,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 struct DriveDetailResponse {
     id: usize,
     serial: String,
@@ -226,6 +234,21 @@ struct DriveDetailResponse {
     approximate_remaining_mb: Option<u64>,
     total_loads: u32,
     motion_hours: f64,
+    // Buffer detail
+    buffer_capacity_bytes: usize,
+    buffer_used_bytes: usize,
+    read_cache_bytes: usize,
+    tape_velocity_pct: Option<f64>,
+    host_rate_bytes_sec: Option<u64>,
+    tape_rate_bytes_sec: Option<u64>,
+    speed_change_count: u32,
+    buffer_backhitch_count: u32,
+    high_water_mark_pct: f64,
+    stall_time_secs: f64,
+    speed_time_distribution: Option<Vec<SpeedTimeEntryResponse>>,
+    tape_efficiency_pct: Option<f64>,
+    write_cycle_count: u32,
+    read_cycle_count: u32,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -792,6 +815,29 @@ async fn vtl_drive_detail(
         approximate_remaining_mb: snap.approximate_remaining_mb,
         total_loads: snap.total_loads,
         motion_hours: snap.motion_hours,
+        buffer_capacity_bytes: snap.buffer_capacity_bytes,
+        buffer_used_bytes: snap.buffer_used_bytes,
+        read_cache_bytes: snap.read_cache_bytes,
+        tape_velocity_pct: snap.tape_velocity_pct,
+        host_rate_bytes_sec: snap.host_rate_bytes_sec,
+        tape_rate_bytes_sec: snap.tape_rate_bytes_sec,
+        speed_change_count: snap.speed_change_count,
+        buffer_backhitch_count: snap.buffer_backhitch_count,
+        high_water_mark_pct: snap.high_water_mark_pct,
+        stall_time_secs: snap.stall_time_secs,
+        speed_time_distribution: snap.speed_time_distribution.map(|dist| {
+            dist.into_iter()
+                .map(|e| SpeedTimeEntryResponse {
+                    speed_index: e.speed_index,
+                    rate_mbps: e.rate_mbps,
+                    time_secs: e.time_secs,
+                    time_pct: e.time_pct,
+                })
+                .collect()
+        }),
+        tape_efficiency_pct: snap.tape_efficiency_pct,
+        write_cycle_count: snap.write_cycle_count,
+        read_cycle_count: snap.read_cycle_count,
     }))
 }
 

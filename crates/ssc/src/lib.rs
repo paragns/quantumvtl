@@ -3,8 +3,10 @@
 //! This crate emulates an IBM Ultrium LTO tape drive. It implements the
 //! ScsiDevice trait from the iscsi-target crate to handle SCSI CDB dispatch.
 
+pub mod buffer;
 pub mod commands;
 pub mod events;
+pub mod io_engine;
 pub mod log_pages;
 pub mod media;
 pub mod mode_pages;
@@ -20,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult};
 use tracing::{trace, warn};
 
+use buffer::DriveBuffer;
 use commands::opcodes::*;
 use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
 use media::geometry::LtoGeneration;
@@ -29,6 +32,7 @@ pub use media::tape::{read_media_detail, MediaDetail, PartitionDetail};
 use media::tape::{DriveMediaState, RecordDescriptor, TapeMedia};
 use mode_pages::{ModePageRegistry, SharedPartitionState};
 use snapshot::{DriveActivity, DriveSnapshot};
+use timing::SimulationClock;
 
 /// Internal drive state protected by a mutex.
 struct DriveState {
@@ -38,6 +42,8 @@ struct DriveState {
     activity: DriveActivity,
     /// Backhitch counter for this mount.
     backhitch_count: u32,
+    /// Buffer simulation. Created on media load, dropped on unload.
+    buffer: Option<DriveBuffer>,
 }
 
 /// A SCSI Tape Drive device emulating an IBM Ultrium LTO drive.
@@ -62,14 +68,12 @@ pub struct TapeDrive {
     partition_state: SharedPartitionState,
     /// Shared drive statistics (consumed by live log pages).
     drive_stats: SharedDriveStats,
+    /// Simulation clock for timing delays.
+    clock: SimulationClock,
 }
 
 impl TapeDrive {
-    pub fn new(
-        serial: &str,
-        generation: LtoGeneration,
-        data_dir: PathBuf,
-    ) -> Self {
+    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf, clock: SimulationClock) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
         let vendor = "IBM     ";
@@ -128,12 +132,27 @@ impl TapeDrive {
                 media_state: None,
                 activity: DriveActivity::Empty,
                 backhitch_count: 0,
+                buffer: None,
             }),
             mode_pages: mode_pages::default_registry(dce.clone(), partition_state.clone()),
             log_pages: log_pages::default_registry(drive_stats.clone()),
             compression_enabled: dce,
             partition_state,
             drive_stats,
+            clock,
+        }
+    }
+
+    /// Tick the buffer simulation. Called by the background ticker.
+    /// Returns `true` if the buffer is active (not idle), signaling
+    /// that the dashboard should refresh.
+    pub fn tick_buffer(&self) -> bool {
+        let mut st = self.state.lock().unwrap();
+        if let Some(ref mut buf) = st.buffer {
+            buf.tick(&self.clock);
+            !matches!(buf.phase(), buffer::BufferPhase::Idle)
+        } else {
+            false
         }
     }
 
@@ -200,6 +219,8 @@ impl TapeDrive {
                     ms.media.geometry.native_capacity_bytes,
                     ms.media.geometry,
                 );
+                let buf_snap = st.buffer.as_ref().map(|b| b.snapshot());
+
                 DriveSnapshot {
                     serial: self.serial.clone(),
                     generation: self.generation,
@@ -215,26 +236,41 @@ impl TapeDrive {
                     current_wrap: Some(phys.wrap),
                     total_wraps: Some(ms.media.geometry.num_wraps),
                     position_in_wrap_pct: Some(phys.offset_in_wrap_pct),
-                    write_buffer_pct: 0.0,
-                    read_cache_pct: 0.0,
-                    objects_in_buffer: 0,
-                    buffer_state: "idle".into(),
+                    write_buffer_pct: buf_snap.as_ref().map(|b| b.write_buffer_pct).unwrap_or(0.0),
+                    read_cache_pct: buf_snap.as_ref().map(|b| b.read_cache_pct).unwrap_or(0.0),
+                    objects_in_buffer: buf_snap.as_ref().map(|b| b.objects_in_buffer).unwrap_or(0),
+                    buffer_state: buf_snap.as_ref().map(|b| b.phase.clone()).unwrap_or_else(|| "idle".into()),
                     drive_state: st.activity.clone(),
-                    tape_speed: None,
+                    tape_speed: buf_snap.as_ref().and_then(|b| b.current_speed_index),
                     operation_progress_pct: None,
-                    instantaneous_rate_bytes_sec: None,
+                    instantaneous_rate_bytes_sec: buf_snap.as_ref().and_then(|b| b.host_rate_bytes_sec),
                     compression_ratio: if ms.media.compression_enabled {
                         Some(ms.media.compression_ratio())
                     } else {
                         None
                     },
-                    backhitch_count_this_mount: st.backhitch_count,
+                    backhitch_count_this_mount: buf_snap.as_ref().map(|b| b.backhitch_count).unwrap_or(st.backhitch_count),
                     capacity_used_pct: Some(ms.media.capacity_used_fraction() * 100.0),
                     native_bytes_written: ms.media.total_native_bytes_written(),
                     compressed_bytes_written: ms.media.total_compressed_bytes_written(),
                     approximate_remaining_mb: Some(ms.media.approximate_remaining_mb()),
                     total_loads: ms.media.total_loads,
                     motion_hours: 0.0,
+                    // Buffer detail fields
+                    buffer_capacity_bytes: buf_snap.as_ref().map(|b| b.capacity_bytes).unwrap_or(0),
+                    buffer_used_bytes: buf_snap.as_ref().map(|b| b.write_buffer_bytes).unwrap_or(0),
+                    read_cache_bytes: buf_snap.as_ref().map(|b| b.read_cache_bytes).unwrap_or(0),
+                    tape_velocity_pct: buf_snap.as_ref().and_then(|b| b.tape_velocity_pct),
+                    host_rate_bytes_sec: buf_snap.as_ref().and_then(|b| b.host_rate_bytes_sec),
+                    tape_rate_bytes_sec: buf_snap.as_ref().and_then(|b| b.effective_tape_rate),
+                    speed_change_count: buf_snap.as_ref().map(|b| b.speed_change_count).unwrap_or(0),
+                    buffer_backhitch_count: buf_snap.as_ref().map(|b| b.backhitch_count).unwrap_or(0),
+                    high_water_mark_pct: buf_snap.as_ref().map(|b| b.high_water_mark_pct).unwrap_or(0.0),
+                    stall_time_secs: buf_snap.as_ref().map(|b| b.stall_time_secs).unwrap_or(0.0),
+                    speed_time_distribution: buf_snap.as_ref().map(|b| b.speed_time_distribution.clone()),
+                    tape_efficiency_pct: buf_snap.as_ref().and_then(|b| b.tape_efficiency_pct),
+                    write_cycle_count: buf_snap.as_ref().map(|b| b.write_cycle_count).unwrap_or(0),
+                    read_cycle_count: buf_snap.as_ref().map(|b| b.read_cycle_count).unwrap_or(0),
                     // Legacy fields
                     position: ms.position.block_number as usize,
                     record_count: ms.current_partition().records.len(),
@@ -261,7 +297,7 @@ impl TapeDrive {
                     match rec {
                         RecordDescriptor::Filemark => filemark_positions.push(i as u64),
                         RecordDescriptor::Data { length, .. } => data_record_sizes.push(*length),
-                        RecordDescriptor::CompressedData { compressed_length, .. } => data_record_sizes.push(*compressed_length),
+                        RecordDescriptor::CompressedData { native_length, .. } => data_record_sizes.push(*native_length),
                     }
                 }
                 PartitionDetail {
@@ -413,9 +449,15 @@ impl MediaLoadNotify for TapeDrive {
             warn!(barcode, error = %e, "failed to persist MAM on load");
         }
 
-        st.media_state = Some(DriveMediaState::new(media, store));
+        // Move store into I/O thread — all subsequent I/O goes through IoHandle
+        let io_handle = io_engine::IoHandle::spawn(store);
+        st.media_state = Some(DriveMediaState::new(media, io_handle));
         st.activity = DriveActivity::Idle;
         st.backhitch_count = 0;
+        st.buffer = Some(DriveBuffer::new(
+            self.generation.geometry(),
+            timing::TimingModel::default_for_generation(self.generation),
+        ));
 
         // Refresh shared stats for log pages
         Self::refresh_stats(&self.drive_stats, st.media_state.as_ref(), self.generation);
@@ -424,6 +466,12 @@ impl MediaLoadNotify for TapeDrive {
     fn media_unloaded(&self) {
         let mut st = self.state.lock().unwrap();
         trace!("tape media unloaded from drive");
+
+        // Flush buffer before unloading
+        if let Some(ref mut buf) = st.buffer {
+            buf.flush();
+        }
+        st.buffer = None;
 
         // Flush final metadata to store before dropping
         if let Some(ref mut ms) = st.media_state {
@@ -446,15 +494,15 @@ impl MediaLoadNotify for TapeDrive {
                 .mam
                 .set_device_managed(0x0222, read_mb.to_be_bytes().to_vec());
 
-            if let Err(e) = ms.store.save_media_meta(&ms.media) {
+            if let Err(e) = ms.io_handle.save_media_meta_sync(&ms.media) {
                 warn!(barcode, error = %e, "failed to persist media metadata on unload");
             }
             for (idx, partition) in ms.media.partitions.iter().enumerate() {
-                if let Err(e) = ms.store.save_partition_stats(idx as u32, partition) {
+                if let Err(e) = ms.io_handle.save_partition_stats_sync(idx as u32, partition) {
                     warn!(barcode, partition = idx, error = %e, "failed to persist partition stats on unload");
                 }
             }
-            if let Err(e) = ms.store.save_mam(&ms.media.mam) {
+            if let Err(e) = ms.io_handle.save_mam_sync(&ms.media.mam) {
                 warn!(barcode, error = %e, "failed to persist MAM on unload");
             }
             trace!(barcode, "flushed tape metadata to redb store");
@@ -547,27 +595,52 @@ impl ScsiDevice for TapeDrive {
         }
 
         // All remaining commands require media to be loaded
-        let media_state = match st.media_state.as_mut() {
+        // Destructure to allow simultaneous mutable access to media_state and buffer
+        let DriveState { ref mut media_state, ref mut buffer, .. } = *st;
+
+        // Tick buffer before dispatching data-path commands
+        if let Some(ref mut buf) = buffer {
+            buf.tick(&self.clock);
+        }
+
+        let media_state = match media_state.as_mut() {
             Some(ms) => ms,
             None => return sense::SenseBuilder::no_media().to_check_condition(),
         };
 
         let result = match opcode {
-            REWIND => commands::position::handle_rewind(media_state),
-            READ_6 => commands::read::handle_read_6(cdb, media_state),
+            REWIND => {
+                if let Some(ref mut buf) = buffer {
+                    buf.flush();
+                }
+                commands::position::handle_rewind(media_state)
+            }
+            READ_6 => {
+                commands::read::handle_read_6(cdb, media_state, buffer, &self.clock)
+            }
             WRITE_6 => {
                 // Sync compression flag from AtomicBool before writing
                 media_state.media.compression_enabled =
                     self.compression_enabled.load(Ordering::Relaxed);
-                commands::write::handle_write_6(cdb, data_out, media_state)
+                commands::write::handle_write_6(cdb, data_out, media_state, buffer, &self.clock)
             }
-            WRITE_FILEMARKS_6 => commands::filemarks::handle_write_filemarks(cdb, media_state),
+            WRITE_FILEMARKS_6 => commands::filemarks::handle_write_filemarks(cdb, media_state, buffer),
             SPACE_6 => commands::position::handle_space_6(cdb, media_state),
             SPACE_16 => commands::position::handle_space_16(cdb, media_state),
             READ_POSITION => commands::position::handle_read_position(cdb, media_state),
             READ_BLOCK_LIMITS => commands::position::handle_read_block_limits(media_state),
-            LOCATE_10 => commands::position::handle_locate_10(cdb, media_state),
-            LOCATE_16 => commands::position::handle_locate_16(cdb, media_state),
+            LOCATE_10 => {
+                if let Some(ref mut buf) = buffer {
+                    buf.flush();
+                }
+                commands::position::handle_locate_10(cdb, media_state)
+            }
+            LOCATE_16 => {
+                if let Some(ref mut buf) = buffer {
+                    buf.flush();
+                }
+                commands::position::handle_locate_16(cdb, media_state)
+            }
             ERASE_6 => commands::erase::handle_erase(cdb, media_state),
             FORMAT_MEDIUM => {
                 commands::erase::handle_format_medium(cdb, media_state, &self.partition_state)

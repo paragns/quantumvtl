@@ -99,6 +99,7 @@ impl TapeStore {
     // ── Data file I/O ───────────────────────────────────────────────────
 
     /// Append raw data bytes to the .data file. Returns (offset, length).
+    /// Note: caller is responsible for flushing (I/O thread batches flushes).
     pub fn append_data(&mut self, data: &[u8]) -> io::Result<(u64, u32)> {
         let offset = self.data_len;
         let length = data.len() as u32;
