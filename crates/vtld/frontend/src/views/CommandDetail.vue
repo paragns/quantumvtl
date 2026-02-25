@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { fetchScsiLogEntry, type ScsiCommandDetail } from '../api'
+import DataFieldTree from '../components/DataFieldTree.vue'
 
 const route = useRoute()
 
@@ -24,6 +25,8 @@ const devicePath = computed(() => {
 
 const detail = ref<ScsiCommandDetail | null>(null)
 const error = ref('')
+const showRawDataIn = ref(false)
+const showRawSense = ref(false)
 
 function formatTime(ts: string): string {
   try {
@@ -41,6 +44,16 @@ function formatDuration(us: number): string {
   if (us < 1000000) return `${(us / 1000).toFixed(1)}ms`
   return `${(us / 1000000).toFixed(2)}s`
 }
+
+const hasStructuredDataIn = computed(() => {
+  const rb = detail.value?.response_breakdown
+  return rb?.data_in_fields && rb.data_in_fields.length > 0
+})
+
+const hasStructuredSense = computed(() => {
+  const sense = detail.value?.response_breakdown?.sense
+  return sense?.fields && sense.fields.length > 0
+})
 
 onMounted(async () => {
   const data = await fetchScsiLogEntry(deviceType.value, deviceId.value, seq.value)
@@ -81,9 +94,6 @@ onMounted(async () => {
         <section class="card panel">
           <h3>Request</h3>
 
-          <div class="section-label">CDB Hex Dump</div>
-          <pre class="hex-dump">{{ detail.cdb_hex }}</pre>
-
           <div class="section-label">CDB Fields</div>
           <table class="field-table">
             <thead>
@@ -106,6 +116,9 @@ onMounted(async () => {
             </tbody>
           </table>
 
+          <div class="section-label">CDB Hex Dump</div>
+          <pre class="hex-dump">{{ detail.cdb_hex }}</pre>
+
           <template v-if="detail.data_out_len > 0">
             <div class="section-label">Data-Out</div>
             <pre v-if="detail.data_out_hex" class="hex-dump">{{ detail.data_out_hex }}</pre>
@@ -124,8 +137,18 @@ onMounted(async () => {
             <span class="duration-note">Command took {{ formatDuration(detail.duration_us) }}</span>
           </div>
 
+          <!-- Sense Data -->
           <template v-if="detail.response_breakdown.sense">
-            <div class="section-label">Sense Data</div>
+            <div class="section-header">
+              <div class="section-label">Sense Data</div>
+              <button
+                v-if="hasStructuredSense"
+                class="toggle-btn"
+                @click="showRawSense = !showRawSense"
+              >{{ showRawSense ? 'Structured' : 'Raw Hex' }}</button>
+            </div>
+
+            <!-- Sense summary (always shown) -->
             <div class="sense-grid">
               <div class="sense-item">
                 <span class="sense-label">Sense Key</span>
@@ -140,13 +163,63 @@ onMounted(async () => {
                 <span class="sense-value">{{ detail.response_breakdown.sense.asc_description }}</span>
               </div>
             </div>
-            <pre class="hex-dump">{{ detail.response_breakdown.sense.hex_dump }}</pre>
+
+            <!-- Structured sense fields -->
+            <template v-if="hasStructuredSense && !showRawSense">
+              <table class="field-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Byte</th>
+                    <th>Bits</th>
+                    <th>Hex</th>
+                    <th>Decoded</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <DataFieldTree :fields="detail.response_breakdown.sense.fields!" />
+                </tbody>
+              </table>
+            </template>
+
+            <!-- Raw sense hex -->
+            <pre v-if="!hasStructuredSense || showRawSense" class="hex-dump">{{ detail.response_breakdown.sense.hex_dump }}</pre>
           </template>
 
+          <!-- Data-In Response -->
           <template v-if="detail.data_in_len > 0">
-            <div class="section-label">Data-In</div>
-            <pre v-if="detail.data_in_hex" class="hex-dump">{{ detail.data_in_hex }}</pre>
-            <p v-else class="omitted">Payload omitted ({{ detail.data_in_len }} bytes)</p>
+            <div class="section-header">
+              <div class="section-label">Data-In ({{ detail.data_in_len }} bytes)</div>
+              <button
+                v-if="hasStructuredDataIn && detail.data_in_hex"
+                class="toggle-btn"
+                @click="showRawDataIn = !showRawDataIn"
+              >{{ showRawDataIn ? 'Structured' : 'Raw Hex' }}</button>
+            </div>
+
+            <!-- Structured data-in fields -->
+            <template v-if="hasStructuredDataIn && !showRawDataIn">
+              <table class="field-table">
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Byte</th>
+                    <th>Bits</th>
+                    <th>Hex</th>
+                    <th>Decoded</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <DataFieldTree :fields="detail.response_breakdown.data_in_fields!" />
+                </tbody>
+              </table>
+            </template>
+
+            <!-- Raw hex (fallback or toggled) -->
+            <template v-if="!hasStructuredDataIn || showRawDataIn">
+              <pre v-if="detail.data_in_hex" class="hex-dump">{{ detail.data_in_hex }}</pre>
+              <p v-else class="omitted">Payload omitted ({{ detail.data_in_len }} bytes)</p>
+            </template>
           </template>
 
           <template v-if="detail.sense_hex && !detail.response_breakdown.sense">
@@ -176,7 +249,20 @@ onMounted(async () => {
 .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
 .card h3 { margin-bottom: 0.75rem; font-size: 1rem; color: #1a1a2e; }
 
+.section-header { display: flex; justify-content: space-between; align-items: center; }
 .section-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; color: #888; margin: 0.75rem 0 0.35rem; }
+.toggle-btn {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #f8f9fa;
+  color: #555;
+  cursor: pointer;
+  margin-top: 0.5rem;
+}
+.toggle-btn:hover { background: #e9ecef; border-color: #ccc; }
+
 .hex-dump { background: #f5f5f5; padding: 0.5rem 0.75rem; border-radius: 4px; font-family: 'SF Mono', 'Consolas', monospace; font-size: 0.78rem; word-break: break-all; white-space: pre-wrap; color: #333; margin: 0; }
 .omitted { font-size: 0.82rem; color: #888; font-style: italic; }
 

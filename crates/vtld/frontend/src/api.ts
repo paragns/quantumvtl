@@ -100,6 +100,15 @@ export interface CdbField {
   decoded: string
 }
 
+export interface DataField {
+  name: string
+  byte_offset: number
+  bit_range: string | null
+  hex_value: string
+  decoded: string
+  children: DataField[] | null
+}
+
 export interface CdbBreakdown {
   opcode: number
   opcode_name: string
@@ -115,6 +124,7 @@ export interface SenseBreakdown {
   ascq: number
   asc_description: string
   hex_dump: string
+  fields?: DataField[]
 }
 
 export interface ResponseBreakdown {
@@ -122,6 +132,7 @@ export interface ResponseBreakdown {
   status_name: string
   data_in_length: number
   data_in_hex: string | null
+  data_in_fields?: DataField[]
   sense: SenseBreakdown | null
 }
 

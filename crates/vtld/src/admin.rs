@@ -1071,6 +1071,7 @@ async fn session_scsi_log_entry(
         ScsiCommandDetailResponse,
         iscsi_target::cdb_decode::CdbBreakdown,
         iscsi_target::cdb_decode::CdbField,
+        iscsi_target::cdb_decode::DataField,
         iscsi_target::cdb_decode::ResponseBreakdown,
         iscsi_target::cdb_decode::SenseBreakdown,
     )),
