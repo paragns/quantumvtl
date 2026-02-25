@@ -71,11 +71,27 @@ pub fn handle_write_6(
     // Truncate from current position (overwrite mode)
     truncate_at_position(media_state, pos, partition_idx);
 
+    // Pre-compute per-partition capacity limit for overflow detection.
+    let num_partitions = media_state.media.partitions.len() as u64;
+    let partition_capacity = media_state.media.native_capacity_bytes() / num_partitions.max(1);
+
     if fixed {
         // Fixed-block mode: data_out contains transfer_length blocks
         if transfer_length > 0 {
             let block_size = data_out.len() / transfer_length as usize;
             for i in 0..transfer_length as usize {
+                // Check capacity before writing this block
+                let partition = media_state.current_partition();
+                if partition.bytes_written_native + block_size as u64 > partition_capacity {
+                    warn!(
+                        partition = media_state.position.partition,
+                        written = partition.bytes_written_native,
+                        capacity = partition_capacity,
+                        "partition capacity exceeded, returning VOLUME OVERFLOW"
+                    );
+                    return SenseBuilder::volume_overflow().to_check_condition();
+                }
+
                 let start = i * block_size;
                 let end = start + block_size;
                 let block = &data_out[start..end];
@@ -104,6 +120,19 @@ pub fn handle_write_6(
         }
     } else {
         // Variable-block mode: data_out is one block
+
+        // Check capacity before writing
+        let partition = media_state.current_partition();
+        if partition.bytes_written_native + data_out.len() as u64 > partition_capacity {
+            warn!(
+                partition = media_state.position.partition,
+                written = partition.bytes_written_native,
+                capacity = partition_capacity,
+                "partition capacity exceeded, returning VOLUME OVERFLOW"
+            );
+            return SenseBuilder::volume_overflow().to_check_condition();
+        }
+
         let (desc, native_bytes, on_disk_bytes) =
             match write_block(&mut media_state.store, data_out, compression_enabled) {
                 Ok(r) => r,

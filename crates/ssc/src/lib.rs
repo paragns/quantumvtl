@@ -65,7 +65,11 @@ pub struct TapeDrive {
 }
 
 impl TapeDrive {
-    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf) -> Self {
+    pub fn new(
+        serial: &str,
+        generation: LtoGeneration,
+        data_dir: PathBuf,
+    ) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
         let vendor = "IBM     ";

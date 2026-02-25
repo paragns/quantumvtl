@@ -306,41 +306,46 @@ impl ModePage for MediumPartitionModePage {
         let st = self.state.lock().unwrap();
         match pc {
             PageControl::Current | PageControl::Saved => {
-                // Variable-length: 4 fixed bytes + 2 bytes per partition size descriptor
+                // SSC spec: 6 fixed bytes (bytes 2-7) + 2 bytes per partition size descriptor.
+                // Bytes: [max_add, add_def, flags, MFR, reserved, reserved, size0_hi, size0_lo, ...]
                 let additional = st.current_additional;
                 let total_partitions = additional as usize + 1;
-                let mut data = vec![0u8; 4 + total_partitions * 2];
+                let mut data = vec![0u8; 6 + total_partitions * 2];
                 data[0] = st.max_additional; // max additional partitions
                 data[1] = additional; // additional partitions defined
-                                      // Byte 2: IDP=1 if partitioned (bit 5), PSUM=00 (units in MB), rest 0
+                // Byte 2: IDP=1 if partitioned (bit 5), PSUM=00 (units in MB), rest 0
                 if additional > 0 {
                     data[2] = 0x20; // IDP=1
                 }
                 data[3] = 0x03; // medium format recognition
-                                // Partition size descriptors: all zeros = capacity split evenly by drive
+                // Bytes 4-5: reserved (already zero)
+                // Bytes 6+: partition size descriptors (all zeros = capacity split evenly by drive)
                 data
             }
             PageControl::Default => {
-                // Default: single partition (additional=0)
-                let mut data = vec![0u8; 4];
+                // Default: single partition (additional=0), 6 fixed + 2 for one size descriptor
+                let mut data = vec![0u8; 8];
                 data[0] = st.max_additional;
                 data[1] = 0; // additional=0
                 data[2] = 0;
                 data[3] = 0x03;
+                // Bytes 4-5: reserved
+                // Bytes 6-7: partition 0 size = 0
                 data
             }
             PageControl::Changeable => {
                 // Changeable mask: bytes 1, 2 are changeable; sizes are changeable
                 let additional = st.current_additional;
                 let total_partitions = additional as usize + 1;
-                let mut data = vec![0u8; 4 + total_partitions * 2];
+                let mut data = vec![0u8; 6 + total_partitions * 2];
                 data[0] = 0x00; // max_additional not changeable
                 data[1] = 0xFF; // additional partitions changeable
                 data[2] = 0x78; // IDP + SDP + FDP + PSUM bits changeable
                 data[3] = 0x00; // MFR not changeable
-                                // Partition sizes changeable
+                // Bytes 4-5: reserved, not changeable
+                // Partition sizes changeable
                 for i in 0..total_partitions * 2 {
-                    data[4 + i] = 0xFF;
+                    data[6 + i] = 0xFF;
                 }
                 data
             }
@@ -350,7 +355,7 @@ impl ModePage for MediumPartitionModePage {
     fn page_length(&self) -> u8 {
         let st = self.state.lock().unwrap();
         let total_partitions = st.current_additional as usize + 1;
-        (4 + total_partitions * 2) as u8
+        (6 + total_partitions * 2) as u8
     }
 
     fn saveable(&self) -> bool {

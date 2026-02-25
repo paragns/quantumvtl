@@ -342,7 +342,7 @@ impl TapeMedia {
         self.partitions.get_mut(index as usize)
     }
 
-    /// Native capacity of this cartridge in bytes.
+    /// Native capacity of this cartridge in bytes (from LTO generation geometry).
     pub fn native_capacity_bytes(&self) -> u64 {
         self.geometry.native_capacity_bytes
     }
