@@ -171,3 +171,14 @@ export async function fetchScsiLogEntry(
   } catch { /* ignore */ }
   return null
 }
+
+export async function fetchSessionScsiLogEntry(
+  tsih: number,
+  seq: number
+): Promise<ScsiCommandDetail | null> {
+  try {
+    const resp = await apiFetch(`/api/vtl/sessions/${tsih}/scsi-log/${seq}`)
+    if (resp.ok) return await resp.json()
+  } catch { /* ignore */ }
+  return null
+}

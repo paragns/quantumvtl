@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -9,7 +11,8 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::login::LoginNegotiator;
 use crate::pdu::{self, Pdu};
-use crate::session::{SessionGuard, SessionInfo, SessionRegistry};
+use crate::scsi_log::{DeviceType, ScsiCommandLog};
+use crate::session::{ConnectionStats, SessionGuard, SessionInfo, SessionRegistry};
 use crate::{ScsiDevice, ScsiResult};
 
 /// An iSCSI target with a name and a set of LUNs.
@@ -112,6 +115,7 @@ struct CommandCompletion {
     read_bit: bool,
     edtl: u32,
     result: ScsiResult,
+    data_in_len: usize,
 }
 
 /// Handle a single iSCSI connection.
@@ -131,6 +135,8 @@ async fn handle_connection(
     let mut stat_sn: u32 = 0;
     let mut exp_cmd_sn: u32 = 1;
     let mut guard = SessionGuard::new(registry.clone());
+    let mut conn_stats: Option<Arc<ConnectionStats>> = None;
+    let mut conn_scsi_log: Option<Arc<ScsiCommandLog>> = None;
 
     // ── Login phase ─────────────────────────────────────────────────────
     loop {
@@ -168,18 +174,30 @@ async fn handle_connection(
                         .clone()
                         .unwrap_or_else(|| "unknown".into());
                     info!(initiator = %initiator, tsih, "login complete, entering Full Feature Phase");
+                    let connected_since = chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
                     registry.register(
                         tsih,
                         SessionInfo {
                             initiator_name: initiator,
                             tsih,
                             peer_addr: peer_addr.to_string(),
-                            connected_since: chrono::Utc::now()
-                                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            connected_since: connected_since.clone(),
                             active_commands: 0,
                         },
                     );
                     guard.set_tsih(tsih);
+
+                    // Register connection and get stats/log handles
+                    let log = Arc::new(ScsiCommandLog::new(DeviceType::TapeDrive, 50));
+                    let stats = registry.register_connection(
+                        tsih,
+                        peer_addr.to_string(),
+                        connected_since,
+                        log.clone(),
+                    );
+                    conn_stats = Some(stats);
+                    conn_scsi_log = Some(log);
                     break;
                 }
             }
@@ -190,6 +208,8 @@ async fn handle_connection(
     }
 
     // ── Full Feature Phase ──────────────────────────────────────────────
+    let conn_stats = conn_stats.expect("login must complete before FFP");
+    let conn_scsi_log = conn_scsi_log.expect("login must complete before FFP");
     run_full_feature_phase(
         &mut reader,
         &mut writer,
@@ -198,6 +218,8 @@ async fn handle_connection(
         &login,
         &mut stat_sn,
         &mut exp_cmd_sn,
+        &conn_stats,
+        &conn_scsi_log,
     )
     .await
 }
@@ -338,6 +360,8 @@ async fn run_full_feature_phase(
     login: &LoginNegotiator,
     stat_sn: &mut u32,
     exp_cmd_sn: &mut u32,
+    conn_stats: &Arc<ConnectionStats>,
+    conn_scsi_log: &Arc<ScsiCommandLog>,
 ) -> std::io::Result<()> {
     let (completion_tx, mut completion_rx) =
         tokio::sync::mpsc::unbounded_channel::<CommandCompletion>();
@@ -373,6 +397,11 @@ async fn run_full_feature_phase(
             Some(completion) = completion_rx.recv() => {
                 pending.insert(completion.seq, completion);
                 while let Some(comp) = pending.remove(&next_send_seq) {
+                    // Track TX stats
+                    conn_stats.active_commands.fetch_sub(1, Ordering::Relaxed);
+                    conn_stats.tx_commands.fetch_add(1, Ordering::Relaxed);
+                    conn_stats.tx_bytes.fetch_add(comp.data_in_len as u64, Ordering::Relaxed);
+
                     send_command_response(writer, comp, *stat_sn, *exp_cmd_sn, max_recv).await?;
                     *stat_sn = stat_sn.wrapping_add(1);
                     next_send_seq += 1;
@@ -440,6 +469,11 @@ async fn run_full_feature_phase(
                         let seq = next_dispatch_seq;
                         next_dispatch_seq += 1;
 
+                        // Track RX stats
+                        conn_stats.rx_commands.fetch_add(1, Ordering::Relaxed);
+                        conn_stats.rx_bytes.fetch_add(write_data.len() as u64, Ordering::Relaxed);
+                        conn_stats.active_commands.fetch_add(1, Ordering::Relaxed);
+
                         let device = if cdb_bytes[0] == 0xA0 {
                             None // REPORT LUNS — handled at target level
                         } else {
@@ -447,8 +481,10 @@ async fn run_full_feature_phase(
                         };
                         let target_ref = target.clone();
                         let tx = completion_tx.clone();
+                        let scsi_log = conn_scsi_log.clone();
 
                         tokio::task::spawn_blocking(move || {
+                            let start = Instant::now();
                             let result = std::panic::catch_unwind(
                                 std::panic::AssertUnwindSafe(|| {
                                     if cdb_bytes[0] == 0xA0 {
@@ -465,6 +501,8 @@ async fn run_full_feature_phase(
                                     }
                                 }),
                             );
+
+                            let duration_us = start.elapsed().as_micros() as u64;
 
                             let result = match result {
                                 Ok(r) => r,
@@ -488,12 +526,17 @@ async fn run_full_feature_phase(
                                 }
                             };
 
+                            // Record to per-connection SCSI log
+                            scsi_log.record(&cdb_bytes, &write_data, &result, duration_us);
+
+                            let data_in_len = result.data_in.len();
                             let _ = tx.send(CommandCompletion {
                                 seq,
                                 itt,
                                 read_bit,
                                 edtl,
                                 result,
+                                data_in_len,
                             });
                         });
                     }

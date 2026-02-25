@@ -229,11 +229,23 @@ struct DriveDetailResponse {
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
+struct ConnectionResponse {
+    cid: u16,
+    peer_addr: String,
+    connected_since: String,
+    rx_commands: u64,
+    rx_bytes: u64,
+    tx_commands: u64,
+    tx_bytes: u64,
+    active_commands: u32,
+    scsi_log: Vec<ScsiLogSummaryEntry>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
 struct SessionResponse {
     initiator_name: String,
     tsih: u16,
-    peer_addr: String,
-    connected_since: String,
+    connections: Vec<ConnectionResponse>,
     active_commands: u32,
 }
 
@@ -794,14 +806,35 @@ async fn vtl_drive_detail(
 async fn vtl_sessions(State(state): State<AdminState>) -> Json<Vec<SessionResponse>> {
     let sessions: Vec<SessionResponse> = state
         .session_registry
-        .snapshot()
+        .session_snapshots()
         .into_iter()
-        .map(|s| SessionResponse {
-            initiator_name: s.initiator_name,
-            tsih: s.tsih,
-            peer_addr: s.peer_addr,
-            connected_since: s.connected_since,
-            active_commands: s.active_commands,
+        .map(|s| {
+            let active_commands: u32 = s.connections.iter().map(|c| c.active_commands).sum();
+            SessionResponse {
+                initiator_name: s.initiator_name,
+                tsih: s.tsih,
+                connections: s
+                    .connections
+                    .into_iter()
+                    .map(|c| ConnectionResponse {
+                        cid: c.cid,
+                        peer_addr: c.peer_addr,
+                        connected_since: c.connected_since,
+                        rx_commands: c.rx_commands,
+                        rx_bytes: c.rx_bytes,
+                        tx_commands: c.tx_commands,
+                        tx_bytes: c.tx_bytes,
+                        active_commands: c.active_commands,
+                        scsi_log: c
+                            .scsi_log
+                            .last_n(20)
+                            .iter()
+                            .map(log_to_summary)
+                            .collect(),
+                    })
+                    .collect(),
+                active_commands,
+            }
         })
         .collect();
     Json(sessions)
@@ -921,6 +954,58 @@ async fn scsi_log_entry(
     };
 
     let entry = log.get_by_seq(path.seq).ok_or(StatusCode::NOT_FOUND)?;
+    let cdb_breakdown = decode_cdb(&entry.cdb, dt);
+    let response_breakdown = decode_response(&entry);
+
+    Ok(Json(ScsiCommandDetailResponse {
+        seq: entry.seq,
+        timestamp: entry.timestamp.clone(),
+        duration_us: entry.duration_us,
+        opcode: entry.opcode,
+        opcode_name: entry.opcode_name.clone(),
+        cdb_hex: hex_string(&entry.cdb),
+        data_out_hex: entry.data_out.as_ref().map(|d| hex_string(d)),
+        data_out_len: entry.data_out_len,
+        status: entry.status,
+        status_name: scsi_status_name(entry.status).to_string(),
+        data_in_hex: entry.data_in.as_ref().map(|d| hex_string(d)),
+        data_in_len: entry.data_in_len,
+        sense_hex: hex_string(&entry.sense),
+        cdb_breakdown,
+        response_breakdown,
+    }))
+}
+
+#[derive(Deserialize)]
+struct SessionScsiEntryPath {
+    tsih: u16,
+    seq: u64,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/vtl/sessions/{tsih}/scsi-log/{seq}",
+    tag = "SCSI Log",
+    params(
+        ("tsih" = u16, Path, description = "Session TSIH"),
+        ("seq" = u64, Path, description = "Sequence number")
+    ),
+    responses(
+        (status = 200, description = "Full command detail", body = ScsiCommandDetailResponse),
+        (status = 404, description = "Entry not found")
+    )
+)]
+async fn session_scsi_log_entry(
+    State(state): State<AdminState>,
+    axum::extract::Path(path): axum::extract::Path<SessionScsiEntryPath>,
+) -> Result<Json<ScsiCommandDetailResponse>, StatusCode> {
+    let entry = state
+        .session_registry
+        .find_scsi_log_entry(path.tsih, path.seq)
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    // Session connections handle tape drive commands
+    let dt = DeviceType::TapeDrive;
     let cdb_breakdown = decode_cdb(&entry.cdb, dt);
     let response_breakdown = decode_response(&entry);
 
@@ -1117,6 +1202,10 @@ pub fn admin_router(state: AdminState) -> Router {
         .route(
             "/api/vtl/scsi-log/entry/{device_type}/{device_id}/{seq}",
             get(scsi_log_entry),
+        )
+        .route(
+            "/api/vtl/sessions/{tsih}/scsi-log/{seq}",
+            get(session_scsi_log_entry),
         )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),

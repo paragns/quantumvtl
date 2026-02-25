@@ -1,5 +1,7 @@
 // Shared TypeScript interfaces for the QuantumVTL admin UI.
 
+import type { ScsiLogSummary } from './api'
+
 export interface ChangerDetail {
   vendor: string
   product: string
@@ -76,10 +78,21 @@ export interface DriveDetail {
   motion_hours: number
 }
 
+export interface ConnectionInfo {
+  cid: number
+  peer_addr: string
+  connected_since: string
+  rx_commands: number
+  rx_bytes: number
+  tx_commands: number
+  tx_bytes: number
+  active_commands: number
+  scsi_log: ScsiLogSummary[]
+}
+
 export interface SessionInfo {
   initiator_name: string
   tsih: number
-  peer_addr: string
-  connected_since: string
+  connections: ConnectionInfo[]
   active_commands: number
 }

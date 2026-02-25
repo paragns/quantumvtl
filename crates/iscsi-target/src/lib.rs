@@ -5,7 +5,7 @@ pub mod scsi_log;
 pub mod session;
 pub mod target;
 
-pub use session::{SessionInfo, SessionRegistry};
+pub use session::{ConnectionSnapshot, ConnectionStats, SessionInfo, SessionRegistry, SessionSnapshot};
 
 /// Result of executing a SCSI command.
 pub struct ScsiResult {

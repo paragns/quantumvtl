@@ -11,6 +11,7 @@ import ApiDocs from './views/ApiDocs.vue'
 import MediaDetail from './views/MediaDetail.vue'
 import DeviceDetail from './views/DeviceDetail.vue'
 import CommandDetail from './views/CommandDetail.vue'
+import SessionCommandDetail from './views/SessionCommandDetail.vue'
 import { checkTokenValid } from './api'
 
 const routes = [
@@ -34,6 +35,7 @@ const routes = [
   { path: '/device/drive/:id', component: DeviceDetail },
   { path: '/device/changer/cmd/:seq', component: CommandDetail },
   { path: '/device/drive/:id/cmd/:seq', component: CommandDetail },
+  { path: '/initiators/:tsih/cmd/:seq', component: SessionCommandDetail },
   // Legacy redirects
   { path: '/smc', redirect: '/devices' },
   { path: '/ssc', redirect: '/devices' },
