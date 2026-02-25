@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiFetch, fetchScsiLog, type ScsiLogSummary } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
 import ScsiLogLine from '../components/ScsiLogLine.vue'
@@ -76,6 +76,17 @@ onUnmounted(() => {
   if (elapsedTimer) clearInterval(elapsedTimer)
 })
 
+const robotSnapTransition = ref(false)
+let lastRobotStartMs = 0
+
+watch(() => changer.value?.robot_operation?.started_at_ms, (ms) => {
+  if (ms != null && ms !== lastRobotStartMs) {
+    lastRobotStartMs = ms
+    robotSnapTransition.value = true
+    requestAnimationFrame(() => { robotSnapTransition.value = false })
+  }
+})
+
 const robotProgressPct = computed(() => {
   const op = changer.value?.robot_operation
   if (!op) return 0
@@ -130,21 +141,6 @@ function formatRate(bytesPerSec: number | null): string {
           <span class="badge" :class="changer.state.toLowerCase()">{{ changer.state }}</span>
         </div>
 
-        <!-- Robot Operation Progress -->
-        <div v-if="changer.robot_operation" class="robot-banner">
-          <div class="robot-header">
-            <span class="robot-icon">&#x1f504;</span>
-            <span class="robot-desc">{{ robotDescription }}</span>
-          </div>
-          <div class="robot-progress-bar">
-            <div class="robot-progress-fill" :style="{ width: robotProgressPct + '%' }"></div>
-          </div>
-          <div class="robot-timing">
-            <span v-if="robotProgressPct < 100">{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s ({{ robotProgressPct.toFixed(0) }}%)</span>
-            <span v-else>{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s — taking longer than expected</span>
-          </div>
-        </div>
-
         <!-- Status Details sub-card -->
         <div class="sub-card">
           <h3>Status</h3>
@@ -172,6 +168,16 @@ function formatRate(bytesPerSec: number | null): string {
             <div class="stat">
               <span class="stat-value" :class="{ warn: changer.prevent_medium_removal }">{{ changer.prevent_medium_removal ? 'Locked' : 'Unlocked' }}</span>
               <span class="stat-label">Medium Removal</span>
+            </div>
+            <div v-if="changer.robot_operation" class="stat robot-stat">
+              <div class="robot-inline">
+                <span class="robot-inline-desc">{{ robotDescription }}</span>
+                <div class="robot-inline-bar">
+                  <div class="robot-inline-fill" :class="{ 'no-transition': robotSnapTransition }" :style="{ width: robotProgressPct + '%' }"></div>
+                </div>
+                <span class="robot-inline-time" v-if="robotProgressPct < 100">{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s</span>
+                <span class="robot-inline-time" v-else>{{ robotElapsedSecs.toFixed(1) }}s — taking longer than expected</span>
+              </div>
             </div>
           </div>
           <div v-if="changer.active_alerts.length" class="alert-row">
@@ -229,76 +235,56 @@ function formatRate(bytesPerSec: number | null): string {
           </div>
 
           <!-- Media & Position -->
-          <div v-if="d.loaded" class="drive-body">
+          <div class="drive-body">
             <div class="drive-stats">
               <div class="stat">
                 <router-link v-if="d.barcode" :to="`/media/${d.barcode}`" class="stat-value barcode-link">{{ d.barcode }}</router-link>
-                <span v-else class="stat-value">N/A</span>
+                <span v-else class="stat-value dim">--</span>
                 <span class="stat-label">Media</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.block_number }}</span>
+                <span class="stat-value">{{ d.loaded ? d.block_number : '--' }}</span>
                 <span class="stat-label">Block</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.file_number }}</span>
+                <span class="stat-value">{{ d.loaded ? d.file_number : '--' }}</span>
                 <span class="stat-label">Filemark</span>
               </div>
-              <div class="stat" v-if="d.at_bop">
-                <span class="stat-value flag">BOP</span>
-                <span class="stat-label">Position</span>
-              </div>
-              <div class="stat" v-if="d.at_eod">
-                <span class="stat-value flag">EOD</span>
-                <span class="stat-label">Position</span>
-              </div>
-            </div>
-
-            <!-- Wrap / Physical position -->
-            <div class="drive-stats" v-if="d.current_wrap != null">
               <div class="stat">
-                <span class="stat-value">{{ d.current_wrap }} / {{ d.total_wraps }}</span>
-                <span class="stat-label">Wrap</span>
-              </div>
-              <div class="stat" v-if="d.tape_speed != null">
-                <span class="stat-value">{{ d.tape_speed }}</span>
-                <span class="stat-label">Speed</span>
-              </div>
-              <div class="stat" v-if="d.position_in_wrap_pct != null">
-                <span class="stat-value">{{ d.position_in_wrap_pct.toFixed(1) }}%</span>
-                <span class="stat-label">Wrap Pos</span>
+                <span class="stat-value" :class="{ flag: d.at_bop || d.at_eod }">{{ d.at_bop ? 'BOP' : d.at_eod ? 'EOD' : '--' }}</span>
+                <span class="stat-label">Position</span>
               </div>
             </div>
 
             <!-- Performance / Buffer summary -->
             <div class="drive-stats">
               <div class="stat">
-                <span class="stat-value">{{ formatRate(d.instantaneous_rate_bytes_sec) }}</span>
+                <span class="stat-value">{{ d.loaded ? formatRate(d.instantaneous_rate_bytes_sec) : '--' }}</span>
                 <span class="stat-label">Data Rate</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.write_buffer_pct.toFixed(0) }}%</span>
+                <span class="stat-value">{{ d.loaded ? d.write_buffer_pct.toFixed(0) + '%' : '--' }}</span>
                 <span class="stat-label">Write Buf</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.read_cache_pct.toFixed(0) }}%</span>
+                <span class="stat-value">{{ d.loaded ? d.read_cache_pct.toFixed(0) + '%' : '--' }}</span>
                 <span class="stat-label">Read Cache</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.backhitch_count_this_mount }}</span>
+                <span class="stat-value">{{ d.loaded ? d.backhitch_count_this_mount : '--' }}</span>
                 <span class="stat-label">Backhitches</span>
               </div>
             </div>
 
             <!-- Capacity bar -->
-            <div class="progress-wrap" v-if="d.capacity_used_pct != null">
+            <div class="progress-wrap">
               <div class="progress-bar">
-                <div class="progress-fill capacity" :style="{ width: d.capacity_used_pct + '%' }"></div>
+                <div class="progress-fill capacity" :style="{ width: (d.capacity_used_pct ?? 0) + '%' }"></div>
               </div>
-              <span class="progress-label">{{ d.capacity_used_pct.toFixed(1) }}% used &middot; {{ d.approximate_remaining_mb != null ? d.approximate_remaining_mb + ' MB remaining' : '' }}</span>
+              <span class="progress-label" v-if="d.capacity_used_pct != null">{{ d.capacity_used_pct.toFixed(1) }}% used &middot; {{ d.approximate_remaining_mb != null ? d.approximate_remaining_mb + ' MB remaining' : '' }}</span>
+              <span class="progress-label" v-else>No media</span>
             </div>
           </div>
-          <div v-else class="drive-empty">No media loaded</div>
 
           <!-- Per-drive SCSI Activity -->
           <div class="drive-scsi">
@@ -384,27 +370,23 @@ function formatRate(bytesPerSec: number | null): string {
   gap: 1rem;
   margin-bottom: 1rem;
 }
-@media (min-width: 1400px) {
-  .drive-grid { grid-template-columns: repeat(4, 1fr); }
-}
 @media (max-width: 800px) {
   .drive-grid { grid-template-columns: 1fr; }
 }
 
 /* ===== Drive Card ===== */
-.drive-card { padding: 1rem; margin-bottom: 0; }
+.drive-card { padding: 1rem; margin-bottom: 0; min-height: 280px; display: flex; flex-direction: column; }
 .drive-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem; }
 .drive-title { font-size: 1rem; font-weight: 700; margin-bottom: 0.1rem; }
 .drive-title-link { color: #1a1a2e; text-decoration: none; }
 .drive-title-link:hover { text-decoration: underline; }
 .drive-meta { color: #888; font-size: 0.78rem; }
 
-.drive-body { border-top: 1px solid #f0f0f0; padding-top: 0.6rem; }
+.drive-body { border-top: 1px solid #f0f0f0; padding-top: 0.6rem; flex: 1; }
 .drive-stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.5rem; }
 .drive-stats .stat-value { font-size: 0.95rem; }
+.drive-stats .stat-value.dim { color: #ccc; }
 .drive-stats .stat-label { font-size: 0.68rem; }
-
-.drive-empty { color: #bbb; font-style: italic; font-size: 0.85rem; padding: 0.5rem 0; border-top: 1px solid #f0f0f0; }
 
 .drive-scsi { border-top: 1px solid #f0f0f0; padding-top: 0.6rem; margin-top: 0.5rem; }
 .drive-scsi h4 { font-size: 0.78rem; color: #555; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 0.3rem; }
@@ -416,36 +398,14 @@ function formatRate(bytesPerSec: number | null): string {
 .progress-fill.capacity { background: #27ae60; }
 .progress-label { font-size: 0.72rem; color: #888; margin-top: 0.2rem; display: block; }
 
-/* ===== Robot Operation Banner ===== */
-.robot-banner {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
-  margin-top: 0.75rem;
-}
-.robot-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-.robot-icon { font-size: 1.1rem; }
-.robot-desc { font-weight: 700; color: #856404; font-size: 0.9rem; text-transform: uppercase; }
-.robot-progress-bar {
-  height: 8px;
-  background: #f0e0a0;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 0.35rem;
-}
-.robot-progress-fill {
-  height: 100%;
-  background: #d4930d;
-  border-radius: 4px;
-  transition: width 1s linear;
-}
-.robot-timing { font-size: 0.8rem; color: #856404; }
+/* ===== Inline Robot Progress ===== */
+.robot-stat { flex: 1 1 100%; }
+.robot-inline { display: flex; align-items: center; gap: 0.6rem; }
+.robot-inline-desc { font-size: 0.82rem; font-weight: 600; color: #1a1a2e; white-space: nowrap; }
+.robot-inline-bar { flex: 1; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden; min-width: 80px; }
+.robot-inline-fill { height: 100%; background: #2980b9; border-radius: 3px; transition: width 1s linear; }
+.robot-inline-fill.no-transition { transition: none; }
+.robot-inline-time { font-size: 0.75rem; color: #888; white-space: nowrap; }
 
 /* ===== Links ===== */
 .card-title-link { color: inherit; text-decoration: none; }

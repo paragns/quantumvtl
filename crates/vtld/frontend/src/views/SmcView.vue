@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { apiFetch, fetchScsiLog, type ScsiLogSummary } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
 import ScsiLogLine from '../components/ScsiLogLine.vue'
@@ -48,6 +48,17 @@ onUnmounted(() => {
   if (elapsedTimer) clearInterval(elapsedTimer)
 })
 
+const robotSnapTransition = ref(false)
+let lastRobotStartMs = 0
+
+watch(() => changer.value?.robot_operation?.started_at_ms, (ms) => {
+  if (ms != null && ms !== lastRobotStartMs) {
+    lastRobotStartMs = ms
+    robotSnapTransition.value = true
+    requestAnimationFrame(() => { robotSnapTransition.value = false })
+  }
+})
+
 const robotProgressPct = computed(() => {
   const op = changer.value?.robot_operation
   if (!op) return 0
@@ -90,21 +101,6 @@ const robotDescription = computed(() => {
         </div>
       </section>
 
-      <!-- Robot Operation Progress -->
-      <section v-if="changer.robot_operation" class="robot-banner">
-        <div class="robot-header">
-          <span class="robot-icon">&#x1f504;</span>
-          <span class="robot-desc">{{ robotDescription }}</span>
-        </div>
-        <div class="robot-progress-bar">
-          <div class="robot-progress-fill" :style="{ width: robotProgressPct + '%' }"></div>
-        </div>
-        <div class="robot-timing">
-          <span v-if="robotProgressPct < 100">{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s ({{ robotProgressPct.toFixed(0) }}%)</span>
-          <span v-else>{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s — taking longer than expected</span>
-        </div>
-      </section>
-
       <!-- Environmental -->
       <section class="card">
         <h3>Environmental</h3>
@@ -140,6 +136,16 @@ const robotDescription = computed(() => {
           <div class="stat" v-if="changer.prevent_medium_removal">
             <span class="stat-value warn">Locked</span>
             <span class="stat-label">Medium Removal</span>
+          </div>
+          <div v-if="changer.robot_operation" class="stat robot-stat">
+            <div class="robot-inline">
+              <span class="robot-inline-desc">{{ robotDescription }}</span>
+              <div class="robot-inline-bar">
+                <div class="robot-inline-fill" :class="{ 'no-transition': robotSnapTransition }" :style="{ width: robotProgressPct + '%' }"></div>
+              </div>
+              <span class="robot-inline-time" v-if="robotProgressPct < 100">{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s</span>
+              <span class="robot-inline-time" v-else>{{ robotElapsedSecs.toFixed(1) }}s — taking longer than expected</span>
+            </div>
           </div>
         </div>
       </section>
@@ -239,34 +245,12 @@ td { padding: 0.35rem 0.6rem; border-bottom: 1px solid #f0f0f0; }
 .barcode-link { color: #1a1a2e; text-decoration: none; font-weight: 600; }
 .barcode-link:hover { text-decoration: underline; color: #2980b9; }
 
-/* Robot Operation Banner */
-.robot-banner {
-  background: #fff3cd;
-  border: 1px solid #ffc107;
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
-  margin-bottom: 1rem;
-}
-.robot-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-.robot-icon { font-size: 1.1rem; }
-.robot-desc { font-weight: 700; color: #856404; font-size: 0.9rem; text-transform: uppercase; }
-.robot-progress-bar {
-  height: 8px;
-  background: #f0e0a0;
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 0.35rem;
-}
-.robot-progress-fill {
-  height: 100%;
-  background: #d4930d;
-  border-radius: 4px;
-  transition: width 1s linear;
-}
-.robot-timing { font-size: 0.8rem; color: #856404; }
+/* Inline Robot Progress */
+.robot-stat { flex: 1 1 100%; }
+.robot-inline { display: flex; align-items: center; gap: 0.6rem; }
+.robot-inline-desc { font-size: 0.82rem; font-weight: 600; color: #1a1a2e; white-space: nowrap; }
+.robot-inline-bar { flex: 1; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden; min-width: 80px; }
+.robot-inline-fill { height: 100%; background: #2980b9; border-radius: 3px; transition: width 1s linear; }
+.robot-inline-fill.no-transition { transition: none; }
+.robot-inline-time { font-size: 0.75rem; color: #888; white-space: nowrap; }
 </style>
