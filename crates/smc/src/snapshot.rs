@@ -72,6 +72,10 @@ pub struct ChangerSnapshot {
     pub active_alerts: Vec<u16>,
     /// Whether medium removal to I/E is prevented.
     pub prevent_medium_removal: bool,
+    /// Epoch millis when the current robot operation started.
+    pub robot_started_at_ms: Option<i64>,
+    /// Estimated duration of the current robot operation (seconds).
+    pub robot_estimated_secs: Option<f64>,
 }
 
 impl ChangerSnapshot {
@@ -112,6 +116,8 @@ impl ChangerSnapshot {
             picker_position: st.picker_position,
             active_alerts: Vec::new(),
             prevent_medium_removal: st.prevent_medium_removal,
+            robot_started_at_ms: st.robot_started_at_ms,
+            robot_estimated_secs: st.robot_estimated_secs,
         }
     }
 }

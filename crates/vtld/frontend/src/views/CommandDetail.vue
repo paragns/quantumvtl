@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { fetchScsiLogEntry, type ScsiCommandDetail } from '../api'
 import DataFieldTree from '../components/DataFieldTree.vue'
@@ -27,6 +27,19 @@ const detail = ref<ScsiCommandDetail | null>(null)
 const error = ref('')
 const showRawDataIn = ref(false)
 const showRawSense = ref(false)
+const nowMs = ref(Date.now())
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+let ws: WebSocket | null = null
+let destroyed = false
+
+const isCompleted = computed(() => detail.value?.completed ?? true)
+
+const elapsedText = computed(() => {
+  if (!detail.value) return ''
+  const startMs = new Date(detail.value.timestamp).getTime()
+  const elapsed = Math.max(0, nowMs.value - startMs) / 1000
+  return `${elapsed.toFixed(1)}s elapsed`
+})
 
 function formatTime(ts: string): string {
   try {
@@ -55,13 +68,40 @@ const hasStructuredSense = computed(() => {
   return sense?.fields && sense.fields.length > 0
 })
 
-onMounted(async () => {
+async function loadDetail() {
   const data = await fetchScsiLogEntry(deviceType.value, deviceId.value, seq.value)
   if (data) {
     detail.value = data
-  } else {
-    error.value = 'Command not found'
+    if (data.completed && elapsedTimer) {
+      clearInterval(elapsedTimer)
+      elapsedTimer = null
+    }
   }
+}
+
+function connectWebSocket() {
+  if (destroyed) return
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  ws = new WebSocket(`${proto}//${location.host}/api/ws`)
+  ws.onmessage = () => { loadDetail() }
+  ws.onclose = () => {
+    ws = null
+    if (!destroyed) {
+      setTimeout(() => { connectWebSocket() }, 5000)
+    }
+  }
+}
+
+onMounted(() => {
+  loadDetail()
+  connectWebSocket()
+  elapsedTimer = setInterval(() => { nowMs.value = Date.now() }, 1000)
+})
+
+onUnmounted(() => {
+  destroyed = true
+  if (elapsedTimer) clearInterval(elapsedTimer)
+  ws?.close()
 })
 </script>
 
@@ -82,8 +122,10 @@ onMounted(async () => {
         <h2>{{ detail.opcode_name }}</h2>
         <div class="meta">
           <span class="meta-item">{{ formatTime(detail.timestamp) }}</span>
-          <span class="meta-item">{{ formatDuration(detail.duration_us) }}</span>
-          <span class="status-badge" :class="{ good: detail.status === 0, error: detail.status !== 0 }">
+          <span v-if="isCompleted" class="meta-item">{{ formatDuration(detail.duration_us) }}</span>
+          <span v-else class="meta-item in-progress-dur">{{ elapsedText }}</span>
+          <span v-if="!isCompleted" class="status-badge in-progress">IN PROGRESS</span>
+          <span v-else class="status-badge" :class="{ good: detail.status === 0, error: detail.status !== 0 }">
             {{ detail.status_name }}
           </span>
         </div>
@@ -131,10 +173,12 @@ onMounted(async () => {
           <h3>Response</h3>
 
           <div class="response-status">
-            <span class="status-badge large" :class="{ good: detail.status === 0, error: detail.status !== 0 }">
+            <span v-if="!isCompleted" class="status-badge large in-progress">IN PROGRESS</span>
+            <span v-else class="status-badge large" :class="{ good: detail.status === 0, error: detail.status !== 0 }">
               {{ detail.status_name }}
             </span>
-            <span class="duration-note">Command took {{ formatDuration(detail.duration_us) }}</span>
+            <span v-if="isCompleted" class="duration-note">Command took {{ formatDuration(detail.duration_us) }}</span>
+            <span v-else class="duration-note in-progress-dur">{{ elapsedText }}</span>
           </div>
 
           <!-- Sense Data -->
@@ -277,6 +321,9 @@ onMounted(async () => {
 .status-badge.large { font-size: 0.9rem; padding: 0.2rem 0.6rem; }
 .status-badge.good { background: #d4edda; color: #155724; }
 .status-badge.error { background: #f8d7da; color: #721c24; }
+.status-badge.in-progress { background: #fff3cd; color: #856404; }
+.in-progress-dur { color: #e67e22; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .duration-note { font-size: 0.82rem; color: #666; }
 
 .sense-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-bottom: 0.5rem; }

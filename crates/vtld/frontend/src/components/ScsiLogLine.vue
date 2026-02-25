@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import type { ScsiLogSummary } from '../api'
 
 const props = defineProps<{
@@ -6,6 +7,25 @@ const props = defineProps<{
   deviceType: string
   deviceId: number
 }>()
+
+const nowMs = ref(Date.now())
+let timer: ReturnType<typeof setInterval> | null = null
+
+onMounted(() => {
+  if (!props.entry.completed) {
+    timer = setInterval(() => { nowMs.value = Date.now() }, 1000)
+  }
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
+
+const elapsedText = computed(() => {
+  const startMs = new Date(props.entry.timestamp).getTime()
+  const elapsed = Math.max(0, nowMs.value - startMs) / 1000
+  return `${elapsed.toFixed(1)}s elapsed`
+})
 
 function formatTime(ts: string): string {
   try {
@@ -36,8 +56,10 @@ const cmdPath = props.deviceType === 'changer'
     <span class="ts">{{ formatTime(entry.timestamp) }}</span>
     <span class="op">{{ entry.opcode_name }}</span>
     <span class="arrow">-&gt;</span>
-    <span class="status" :class="{ good: entry.status === 0, error: entry.status !== 0 }">{{ entry.status_name }}</span>
-    <span class="dur">{{ formatDuration(entry.duration_us) }}</span>
+    <span v-if="!entry.completed" class="status in-progress">IN PROGRESS</span>
+    <span v-else class="status" :class="{ good: entry.status === 0, error: entry.status !== 0 }">{{ entry.status_name }}</span>
+    <span v-if="entry.completed" class="dur">{{ formatDuration(entry.duration_us) }}</span>
+    <span v-else class="dur in-progress-dur">{{ elapsedText }}</span>
   </router-link>
 </template>
 
@@ -61,4 +83,7 @@ const cmdPath = props.deviceType === 'changer'
 .status.good { color: #27ae60; font-weight: 600; }
 .status.error { color: #c0392b; font-weight: 600; }
 .dur { color: #888; margin-left: auto; white-space: nowrap; }
+.status.in-progress { color: #e67e22; font-weight: 600; }
+.dur.in-progress-dur { color: #e67e22; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>

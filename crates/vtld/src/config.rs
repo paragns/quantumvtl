@@ -19,6 +19,14 @@ pub struct Config {
     pub iscsi: IscsiConfig,
     #[serde(default)]
     pub users: Vec<UserConfig>,
+    /// Simulation speed factor (1.0 = realistic, higher = faster).
+    /// Defaults to 1.0 (real-time). Set to a very large value for instant.
+    #[serde(default = "default_simulation_speed")]
+    pub simulation_speed: f64,
+}
+
+fn default_simulation_speed() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Deserialize)]

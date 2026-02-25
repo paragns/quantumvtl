@@ -16,6 +16,24 @@ pub struct MoveParams {
     pub dest_is_drive: bool,
 }
 
+/// Deferred drive notification to be applied after releasing the state lock.
+pub enum DriveNotification {
+    Loaded(Arc<dyn MediaLoadNotify>, String),
+    Unloaded(Arc<dyn MediaLoadNotify>),
+}
+
+impl DriveNotification {
+    /// Apply all pending notifications. Call this **outside** the state lock.
+    pub fn apply_all(notifications: Vec<DriveNotification>) {
+        for n in notifications {
+            match n {
+                DriveNotification::Loaded(drive, barcode) => drive.media_loaded(&barcode),
+                DriveNotification::Unloaded(drive) => drive.media_unloaded(),
+            }
+        }
+    }
+}
+
 /// Parse the CDB and validate the move against current state.
 /// Returns `Ok(MoveParams)` if the move is valid, or `Err(ScsiResult)` on error.
 pub fn validate_move_medium(cdb: &[u8], st: &ChangerState) -> Result<MoveParams, ScsiResult> {
@@ -108,32 +126,38 @@ pub fn validate_move_medium(cdb: &[u8], st: &ChangerState) -> Result<MoveParams,
 
 /// Execute the media transfer. Called after timing delay with state re-locked.
 /// Re-validates key preconditions to handle TOCTOU races.
+///
+/// Returns (ScsiResult, Vec<DriveNotification>) — the caller must apply
+/// the notifications **after** releasing the state lock to avoid blocking
+/// admin API snapshot calls during slow I/O (tape data file open).
 pub fn execute_move_medium(
     source: u16,
     dest: u16,
     st: &mut ChangerState,
     drives: &[Arc<dyn MediaLoadNotify>],
-) -> ScsiResult {
+) -> (ScsiResult, Vec<DriveNotification>) {
     // Re-validate after sleep (another operation may have changed state)
     if !st.elements.contains_key(&source) || !st.elements.contains_key(&dest) {
-        return SenseBuilder::invalid_element_address().to_check_condition();
+        return (SenseBuilder::invalid_element_address().to_check_condition(), vec![]);
     }
     if !st.elements[&source].full {
-        return SenseBuilder::source_element_empty()
+        return (SenseBuilder::source_element_empty()
             .with_information(source as u32)
-            .to_check_condition();
+            .to_check_condition(), vec![]);
     }
     if st.elements[&dest].full {
-        return SenseBuilder::destination_element_full()
+        return (SenseBuilder::destination_element_full()
             .with_information(dest as u32)
-            .to_check_condition();
+            .to_check_condition(), vec![]);
     }
 
-    // Notify source drive (if DTE) that media is being unloaded
+    let mut notifications = Vec::new();
+
+    // Record source drive unload notification (if DTE)
     if st.elements[&source].element_type == ELEM_DTE {
         if let Some(drive_idx) = st.drive_index(source) {
             if let Some(drive) = drives.get(drive_idx) {
-                drive.media_unloaded();
+                notifications.push(DriveNotification::Unloaded(Arc::clone(drive)));
             }
         }
     }
@@ -154,12 +178,12 @@ pub fn execute_move_medium(
         dst_elem.import_export = false; // Moved by robot, not operator
     }
 
-    // Notify destination drive (if DTE) that media is loaded
+    // Record destination drive load notification (if DTE)
     if st.elements[&dest].element_type == ELEM_DTE {
         if let Some(drive_idx) = st.drive_index(dest) {
             if let Some(drive) = drives.get(drive_idx) {
                 if let Some(ref bc) = barcode {
-                    drive.media_loaded(bc);
+                    notifications.push(DriveNotification::Loaded(Arc::clone(drive), bc.clone()));
                 }
             }
         }
@@ -170,17 +194,23 @@ pub fn execute_move_medium(
 
     trace!(source, dest, barcode = ?barcode, "MOVE MEDIUM complete");
 
-    sense::good()
+    (sense::good(), notifications)
 }
 
 /// Handle MOVE MEDIUM (A5h) — non-timed version for direct use in tests.
+/// Note: this applies drive notifications synchronously (caller holds the lock),
+/// which is fine for tests but would block in production — use timed_move_medium instead.
 pub fn handle_move_medium(
     cdb: &[u8],
     st: &mut ChangerState,
     drives: &[Arc<dyn MediaLoadNotify>],
 ) -> ScsiResult {
     match validate_move_medium(cdb, st) {
-        Ok(params) => execute_move_medium(params.source, params.dest, st, drives),
+        Ok(params) => {
+            let (result, notifications) = execute_move_medium(params.source, params.dest, st, drives);
+            DriveNotification::apply_all(notifications);
+            result
+        }
         Err(result) => result,
     }
 }

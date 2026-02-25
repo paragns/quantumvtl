@@ -26,23 +26,28 @@ function logout() {
 
 // --- Simulation Speed Slider ---
 
-const speedLabel = ref('Instant')
-const sliderPos = ref(100)
+const speedLabel = ref('1.0x')
+const sliderPos = ref(3)
 let ws: WebSocket | null = null
 let wsTimer: number | null = null
 let destroyed = false
 
-// Logarithmic mapping: pos 0 = 0.1x, pos 50 = 1.0x, pos 100 = Infinity
+// Discrete power-of-2 speed detents
+const speedSteps = [0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
+
 function posToFactor(pos: number): number {
-  if (pos >= 100) return Infinity
-  return Math.pow(10, (pos - 50) / 15)
+  return speedSteps[Math.max(0, Math.min(speedSteps.length - 1, Math.round(pos)))]
 }
 
 function factorToPos(factor: number): number {
-  if (!isFinite(factor) || factor > 1_000_000) return 100
-  if (factor <= 0) return 0
-  const pos = 15 * Math.log10(factor) + 50
-  return Math.max(0, Math.min(100, Math.round(pos)))
+  // Snap to nearest power-of-2 detent
+  let best = 0
+  let bestDist = Infinity
+  for (let i = 0; i < speedSteps.length; i++) {
+    const dist = Math.abs(Math.log2(factor) - Math.log2(speedSteps[i]))
+    if (dist < bestDist) { bestDist = dist; best = i }
+  }
+  return best
 }
 
 async function loadSpeed() {
@@ -97,19 +102,19 @@ onUnmounted(() => {
         <router-link to="/config" class="tab" :class="{ active: activeTab === 'config' }">Config</router-link>
         <span class="spacer"></span>
         <div class="speed-control">
-          <span class="speed-icon" title="Robot simulation speed">&#9889;</span>
-          <span class="speed-label-text">Glacial</span>
+          <span class="speed-icon" title="Simulation speed">&#9889;</span>
+          <span class="speed-label-text">0.125x</span>
           <input
             type="range"
             class="speed-slider"
             min="0"
-            max="100"
+            :max="speedSteps.length - 1"
             step="1"
             v-model.number="sliderPos"
             @change="onSliderChange"
-            title="Robot simulation speed"
+            title="Simulation speed"
           />
-          <span class="speed-label-text">Ludicrous</span>
+          <span class="speed-label-text">16x</span>
           <span class="speed-value">{{ speedLabel }}</span>
         </div>
         <router-link to="/docs" class="tab right-tab" :class="{ active: activeTab === 'docs' }">Docs</router-link>

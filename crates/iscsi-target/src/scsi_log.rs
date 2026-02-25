@@ -35,6 +35,7 @@ pub struct ScsiLogEntry {
     pub data_in: Option<Vec<u8>>,
     pub data_in_len: usize,
     pub sense: Vec<u8>,
+    pub completed: bool,
 }
 
 /// Thread-safe ring buffer of recent SCSI command/response pairs.
@@ -55,7 +56,7 @@ impl ScsiCommandLog {
         }
     }
 
-    /// Record a new SCSI exchange, returning the assigned sequence number.
+    /// Record a completed SCSI exchange in one shot, returning the assigned sequence number.
     pub fn record(
         &self,
         cdb: &[u8],
@@ -88,6 +89,7 @@ impl ScsiCommandLog {
             },
             data_in_len: result.data_in.len(),
             sense: result.sense.clone(),
+            completed: true,
         };
 
         let mut entries = self.entries.lock().unwrap();
@@ -96,6 +98,59 @@ impl ScsiCommandLog {
         }
         entries.push_back(entry);
         seq
+    }
+
+    /// Record the start of a SCSI command (in-progress). Returns the sequence number
+    /// to pass to `record_complete()` when the command finishes.
+    pub fn record_start(&self, cdb: &[u8], data_out: &[u8]) -> u64 {
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let opcode = cdb.first().copied().unwrap_or(0);
+        let omit_payload = is_data_payload_opcode(opcode, self.device_type);
+
+        let entry = ScsiLogEntry {
+            seq,
+            timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            duration_us: 0,
+            cdb: cdb.to_vec(),
+            opcode,
+            opcode_name: opcode_name(opcode, self.device_type).to_string(),
+            data_out: if omit_payload || data_out.is_empty() {
+                None
+            } else {
+                Some(data_out.to_vec())
+            },
+            data_out_len: data_out.len(),
+            status: 0,
+            data_in: None,
+            data_in_len: 0,
+            sense: vec![],
+            completed: false,
+        };
+
+        let mut entries = self.entries.lock().unwrap();
+        if entries.len() >= self.capacity {
+            entries.pop_front();
+        }
+        entries.push_back(entry);
+        seq
+    }
+
+    /// Update an in-progress entry with the final result and duration.
+    pub fn record_complete(&self, seq: u64, result: &ScsiResult, duration_us: u64) {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(entry) = entries.iter_mut().find(|e| e.seq == seq) {
+            let omit_payload = is_data_payload_opcode(entry.opcode, self.device_type);
+            entry.duration_us = duration_us;
+            entry.status = result.status;
+            entry.data_in = if omit_payload || result.data_in.is_empty() {
+                None
+            } else {
+                Some(result.data_in.clone())
+            };
+            entry.data_in_len = result.data_in.len();
+            entry.sense = result.sense.clone();
+            entry.completed = true;
+        }
     }
 
     /// Return the last N entries (most recent last).
@@ -148,13 +203,20 @@ impl TracedDevice {
 
 impl ScsiDevice for TracedDevice {
     fn execute_command(&self, cdb: &[u8], data_out: &[u8]) -> ScsiResult {
+        let seq = self.log.record_start(cdb, data_out);
+
+        // Notify WS: command arrived (in-progress)
+        if let Some(ref tx) = self.ws_tx {
+            let _ = tx.send(());
+        }
+
         let start = Instant::now();
         let result = self.inner.execute_command(cdb, data_out);
         let duration_us = start.elapsed().as_micros() as u64;
 
-        self.log.record(cdb, data_out, &result, duration_us);
+        self.log.record_complete(seq, &result, duration_us);
 
-        // Notify WebSocket subscribers of new activity
+        // Notify WS: command completed
         if let Some(ref tx) = self.ws_tx {
             let _ = tx.send(());
         }

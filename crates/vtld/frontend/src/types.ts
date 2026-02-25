@@ -18,6 +18,13 @@ export interface ChangerDetail {
   num_slots: number
   num_import_export: number
   elements: ElementDetail[]
+  robot_operation: {
+    kind: string
+    source: number | null
+    dest: number | null
+    started_at_ms: number
+    estimated_secs: number
+  } | null
 }
 
 export interface ElementDetail {

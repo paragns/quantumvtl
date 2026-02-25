@@ -236,6 +236,12 @@ pub struct ChangerState {
 
     /// Simulated humidity (percent).
     pub humidity_pct: u8,
+
+    /// Epoch millis when the current robot operation started.
+    pub robot_started_at_ms: Option<i64>,
+
+    /// Estimated duration of the current robot operation (seconds).
+    pub robot_estimated_secs: Option<f64>,
 }
 
 impl ChangerState {
@@ -283,6 +289,8 @@ impl ChangerState {
             picker_position: MTE_START,
             temperature_c: 22,
             humidity_pct: 45,
+            robot_started_at_ms: None,
+            robot_estimated_secs: None,
         }
     }
 

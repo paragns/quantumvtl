@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { apiFetch, fetchScsiLog, type ScsiLogSummary } from '../api'
 import { useWebSocket } from '../composables/useWebSocket'
 import ScsiLogLine from '../components/ScsiLogLine.vue'
@@ -52,6 +52,55 @@ async function fetchData() {
 
 useWebSocket(fetchData)
 
+const nowMs = ref(Date.now())
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+let pendingRefetch = false
+
+onMounted(() => {
+  elapsedTimer = setInterval(() => {
+    nowMs.value = Date.now()
+    // Re-fetch while changer is busy: picks up robot_operation on first tick,
+    // detects completion on subsequent ticks (WS notifications may be dropped
+    // by guardedFetch if a fetch is already in-flight).
+    const state = changer.value?.state?.toLowerCase()
+    if (state === 'moving' || state === 'scanning') {
+      if (!pendingRefetch) {
+        pendingRefetch = true
+        fetchData().finally(() => { pendingRefetch = false })
+      }
+    }
+  }, 1000)
+})
+
+onUnmounted(() => {
+  if (elapsedTimer) clearInterval(elapsedTimer)
+})
+
+const robotProgressPct = computed(() => {
+  const op = changer.value?.robot_operation
+  if (!op) return 0
+  const elapsed = (nowMs.value - op.started_at_ms) / 1000
+  return Math.min(100, (elapsed / op.estimated_secs) * 100)
+})
+
+const robotElapsedSecs = computed(() => {
+  const op = changer.value?.robot_operation
+  if (!op) return 0
+  return Math.max(0, (nowMs.value - op.started_at_ms) / 1000)
+})
+
+const robotDescription = computed(() => {
+  const op = changer.value?.robot_operation
+  if (!op) return ''
+  if (op.kind === 'moving' && op.source != null && op.dest != null) {
+    const src = '0x' + op.source.toString(16).padStart(4, '0').toUpperCase()
+    const dst = '0x' + op.dest.toString(16).padStart(4, '0').toUpperCase()
+    return `Moving medium ${src} \u2192 ${dst}`
+  }
+  if (op.kind === 'scanning') return 'Scanning inventory'
+  return 'Robot operation in progress'
+})
+
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
@@ -79,6 +128,21 @@ function formatRate(bytesPerSec: number | null): string {
             <p class="changer-meta">S/N: {{ changer.serial }} &middot; FW: {{ changer.firmware_version }}</p>
           </div>
           <span class="badge" :class="changer.state.toLowerCase()">{{ changer.state }}</span>
+        </div>
+
+        <!-- Robot Operation Progress -->
+        <div v-if="changer.robot_operation" class="robot-banner">
+          <div class="robot-header">
+            <span class="robot-icon">&#x1f504;</span>
+            <span class="robot-desc">{{ robotDescription }}</span>
+          </div>
+          <div class="robot-progress-bar">
+            <div class="robot-progress-fill" :style="{ width: robotProgressPct + '%' }"></div>
+          </div>
+          <div class="robot-timing">
+            <span v-if="robotProgressPct < 100">{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s ({{ robotProgressPct.toFixed(0) }}%)</span>
+            <span v-else>{{ robotElapsedSecs.toFixed(1) }}s / {{ changer.robot_operation.estimated_secs.toFixed(1) }}s — taking longer than expected</span>
+          </div>
         </div>
 
         <!-- Status Details sub-card -->
@@ -297,7 +361,7 @@ function formatRate(bytesPerSec: number | null): string {
 /* ===== Badges ===== */
 .badge { display: inline-block; padding: 0.2rem 0.7rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; text-transform: capitalize; }
 .badge.ready { background: #d4edda; color: #155724; }
-.badge.initializing, .badge.scanning { background: #fff3cd; color: #856404; }
+.badge.initializing, .badge.scanning, .badge.moving { background: #fff3cd; color: #856404; }
 .badge.notready { background: #f8d7da; color: #721c24; }
 .badge.idle { background: #d4edda; color: #155724; }
 .badge.empty { background: #e2e3e5; color: #383d41; }
@@ -351,6 +415,37 @@ function formatRate(bytesPerSec: number | null): string {
 .progress-fill { height: 100%; background: #1a1a2e; border-radius: 3px; transition: width 0.3s; }
 .progress-fill.capacity { background: #27ae60; }
 .progress-label { font-size: 0.72rem; color: #888; margin-top: 0.2rem; display: block; }
+
+/* ===== Robot Operation Banner ===== */
+.robot-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+.robot-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.robot-icon { font-size: 1.1rem; }
+.robot-desc { font-weight: 700; color: #856404; font-size: 0.9rem; text-transform: uppercase; }
+.robot-progress-bar {
+  height: 8px;
+  background: #f0e0a0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 0.35rem;
+}
+.robot-progress-fill {
+  height: 100%;
+  background: #d4930d;
+  border-radius: 4px;
+  transition: width 1s linear;
+}
+.robot-timing { font-size: 0.8rem; color: #856404; }
 
 /* ===== Links ===== */
 .card-title-link { color: inherit; text-decoration: none; }

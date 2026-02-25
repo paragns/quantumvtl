@@ -84,6 +84,7 @@ export interface ScsiLogSummary {
   data_out_len: number
   data_in_len: number
   has_sense: boolean
+  completed: boolean
 }
 
 export interface ScsiLogResponse {
@@ -152,6 +153,7 @@ export interface ScsiCommandDetail {
   sense_hex: string
   cdb_breakdown: CdbBreakdown
   response_breakdown: ResponseBreakdown
+  completed: boolean
 }
 
 // --- SCSI Log Fetch Functions ---

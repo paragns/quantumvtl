@@ -177,6 +177,16 @@ struct ChangerDetailResponse {
     num_slots: u16,
     num_import_export: u16,
     elements: Vec<ElementDetailResponse>,
+    robot_operation: Option<RobotOperationResponse>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct RobotOperationResponse {
+    kind: String,
+    source: Option<u16>,
+    dest: Option<u16>,
+    started_at_ms: i64,
+    estimated_secs: f64,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -288,6 +298,7 @@ struct ScsiLogSummaryEntry {
     data_out_len: usize,
     data_in_len: usize,
     has_sense: bool,
+    completed: bool,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -314,6 +325,7 @@ struct ScsiCommandDetailResponse {
     sense_hex: String,
     cdb_breakdown: CdbBreakdown,
     response_breakdown: ResponseBreakdown,
+    completed: bool,
 }
 
 #[derive(Deserialize)]
@@ -747,7 +759,33 @@ async fn vtl_changer(State(state): State<AdminState>) -> Json<ChangerDetailRespo
             }
         })
         .collect();
-    let state_str = format!("{:?}", snap.state);
+    let state_str = match &snap.state {
+        smc::LibraryState::Initializing => "Initializing".to_string(),
+        smc::LibraryState::Ready => "Ready".to_string(),
+        smc::LibraryState::NotReady(reason) => format!("NotReady: {reason}"),
+        smc::LibraryState::Moving { .. } => "Moving".to_string(),
+        smc::LibraryState::Scanning => "Scanning".to_string(),
+    };
+
+    let robot_operation = snap.robot_started_at_ms.zip(snap.robot_estimated_secs).map(
+        |(started_at_ms, estimated_secs)| {
+            let (kind, source, dest) = match &snap.state {
+                smc::LibraryState::Moving { source, dest } => {
+                    ("moving".to_string(), Some(*source), Some(*dest))
+                }
+                smc::LibraryState::Scanning => ("scanning".to_string(), None, None),
+                _ => ("unknown".to_string(), None, None),
+            };
+            RobotOperationResponse {
+                kind,
+                source,
+                dest,
+                started_at_ms,
+                estimated_secs,
+            }
+        },
+    );
+
     Json(ChangerDetailResponse {
         vendor: snap.vendor,
         product: snap.product,
@@ -764,6 +802,7 @@ async fn vtl_changer(State(state): State<AdminState>) -> Json<ChangerDetailRespo
         num_slots: snap.num_slots,
         num_import_export: snap.num_import_export,
         elements,
+        robot_operation,
     })
 }
 
@@ -902,6 +941,7 @@ fn log_to_summary(entry: &iscsi_target::scsi_log::ScsiLogEntry) -> ScsiLogSummar
         data_out_len: entry.data_out_len,
         data_in_len: entry.data_in_len,
         has_sense: !entry.sense.is_empty(),
+        completed: entry.completed,
     }
 }
 
@@ -1021,6 +1061,7 @@ async fn scsi_log_entry(
         sense_hex: hex_string(&entry.sense),
         cdb_breakdown,
         response_breakdown,
+        completed: entry.completed,
     }))
 }
 
@@ -1073,6 +1114,7 @@ async fn session_scsi_log_entry(
         sense_hex: hex_string(&entry.sense),
         cdb_breakdown,
         response_breakdown,
+        completed: entry.completed,
     }))
 }
 
@@ -1110,6 +1152,7 @@ async fn session_scsi_log_entry(
         MediaResponse,
         LibrarySnapshot,
         ChangerDetailResponse,
+        RobotOperationResponse,
         ElementDetailResponse,
         DriveDetailResponse,
         SessionResponse,
@@ -1146,17 +1189,36 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AdminState>) -> im
 async fn handle_ws(mut socket: WebSocket, state: AdminState) {
     let mut rx = state.ws_tx.subscribe();
     let _ = socket.send(Message::Text("refresh".into())).await;
+
+    // Debounce: coalesce rapid-fire notifications into one message per interval.
+    // Without this, hundreds of SCSI commands/sec flood the browser with WS messages,
+    // saturating the TCP receive buffer and causing the browser to hang.
+    let debounce = tokio::time::Duration::from_millis(200);
+    let mut pending = false;
+    let mut timer = std::pin::pin!(tokio::time::sleep(debounce));
+
     loop {
         tokio::select! {
             result = rx.recv() => {
                 match result {
                     Ok(()) => {
-                        if socket.send(Message::Text("refresh".into())).await.is_err() {
-                            break;
+                        if !pending {
+                            pending = true;
+                            timer.as_mut().reset(tokio::time::Instant::now() + debounce);
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Missed some messages — trigger a refresh anyway
+                        pending = true;
+                        timer.as_mut().reset(tokio::time::Instant::now() + debounce);
+                    }
                     Err(_) => break,
+                }
+            }
+            () = &mut timer, if pending => {
+                pending = false;
+                if socket.send(Message::Text("refresh".into())).await.is_err() {
+                    break;
                 }
             }
             msg = socket.recv() => {
@@ -1259,14 +1321,11 @@ struct SimulationSpeedRequest {
 }
 
 fn speed_label(factor: f64) -> String {
-    if factor > 1_000_000.0 || factor.is_infinite() {
-        "Instant".to_string()
-    } else if (factor - 1.0).abs() < 0.05 {
-        "Realistic".to_string()
-    } else if factor < 0.2 {
-        "Glacial".to_string()
+    if factor >= 1.0 && (factor - factor.round()).abs() < 0.05 {
+        format!("{:.0}x", factor.round())
     } else {
-        format!("{factor:.1}x")
+        // Sub-1 values: show enough decimals (0.125x, 0.25x, 0.5x)
+        format!("{factor}x")
     }
 }
 
@@ -1274,11 +1333,10 @@ async fn get_simulation_speed(
     State(state): State<AdminState>,
 ) -> Json<SimulationSpeedResponse> {
     let factor = state.simulation_clock.speed_factor();
-    // JSON cannot represent Infinity; use a large finite sentinel that the frontend
-    // maps to the "Instant" slider position.
-    let json_factor = if factor.is_infinite() { 1e18 } else { factor };
+    // Clamp to valid range in case the clock was initialised with a legacy value
+    let factor = factor.clamp(0.125, 16.0);
     Json(SimulationSpeedResponse {
-        speed_factor: json_factor,
+        speed_factor: factor,
         label: speed_label(factor),
     })
 }
@@ -1287,18 +1345,11 @@ async fn set_simulation_speed(
     State(state): State<AdminState>,
     Json(req): Json<SimulationSpeedRequest>,
 ) -> Json<SimulationSpeedResponse> {
-    let factor = if req.speed_factor > 1_000_000.0 {
-        f64::INFINITY
-    } else if req.speed_factor < 0.01 {
-        0.01
-    } else {
-        req.speed_factor
-    };
+    let factor = req.speed_factor.clamp(0.125, 16.0);
     state.simulation_clock.set_speed_factor(factor);
     let _ = state.ws_tx.send(());
-    let json_factor = if factor.is_infinite() { 1e18 } else { factor };
     Json(SimulationSpeedResponse {
-        speed_factor: json_factor,
+        speed_factor: factor,
         label: speed_label(factor),
     })
 }

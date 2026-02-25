@@ -3,6 +3,9 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchScsiLog, type ScsiLogSummary } from '../api'
 
+const nowMs = ref(Date.now())
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+
 const route = useRoute()
 const router = useRouter()
 
@@ -80,14 +83,22 @@ function formatOpcode(op: number): string {
   return `0x${op.toString(16).toUpperCase().padStart(2, '0')}`
 }
 
+function formatElapsed(ts: string): string {
+  const startMs = new Date(ts).getTime()
+  const elapsed = Math.max(0, nowMs.value - startMs) / 1000
+  return `${elapsed.toFixed(1)}s elapsed`
+}
+
 onMounted(() => {
   guardedLoad()
   connectWebSocket()
+  elapsedTimer = setInterval(() => { nowMs.value = Date.now() }, 1000)
 })
 
 onUnmounted(() => {
   destroyed = true
   if (pollTimer) clearTimeout(pollTimer)
+  if (elapsedTimer) clearInterval(elapsedTimer)
   ws?.close()
 })
 </script>
@@ -130,11 +141,15 @@ onUnmounted(() => {
             <td class="mono">{{ formatOpcode(e.opcode) }}</td>
             <td class="cmd-name">{{ e.opcode_name }}</td>
             <td>
-              <span class="status-badge" :class="{ good: e.status === 0, error: e.status !== 0 }">
+              <span v-if="!e.completed" class="status-badge in-progress">IN PROGRESS</span>
+              <span v-else class="status-badge" :class="{ good: e.status === 0, error: e.status !== 0 }">
                 {{ e.status_name }}
               </span>
             </td>
-            <td class="mono">{{ formatDuration(e.duration_us) }}</td>
+            <td class="mono">
+              <span v-if="e.completed">{{ formatDuration(e.duration_us) }}</span>
+              <span v-else class="in-progress-dur">{{ formatElapsed(e.timestamp) }}</span>
+            </td>
             <td class="mono">{{ e.data_out_len }}</td>
             <td class="mono">{{ e.data_in_len }}</td>
           </tr>
@@ -169,4 +184,7 @@ h2 { margin-bottom: 1rem; }
 .status-badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.75rem; font-weight: 600; }
 .status-badge.good { background: #d4edda; color: #155724; }
 .status-badge.error { background: #f8d7da; color: #721c24; }
+.status-badge.in-progress { background: #fff3cd; color: #856404; }
+.in-progress-dur { color: #e67e22; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 </style>

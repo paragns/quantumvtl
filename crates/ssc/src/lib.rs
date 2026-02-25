@@ -340,8 +340,8 @@ impl TapeDrive {
 
 impl MediaLoadNotify for TapeDrive {
     fn media_loaded(&self, barcode: &str) {
-        let mut st = self.state.lock().unwrap();
-        trace!(barcode, "tape media loaded into drive");
+        // ---- Phase 1: All I/O happens OUTSIDE the state lock ----
+        // This avoids blocking snapshot() calls from admin API handlers.
 
         // Open the per-media store (redb + data file)
         let store = match TapeStore::open(&self.data_dir, barcode) {
@@ -424,7 +424,7 @@ impl MediaLoadNotify for TapeDrive {
         self.compression_enabled
             .store(media.compression_enabled, Ordering::Relaxed);
 
-        // Update shared partition page state from loaded media
+        // Update shared partition page state (separate lock, very fast)
         {
             let mut ps = self.partition_state.lock().unwrap();
             ps.current_additional = (media.partitions.len() as u8).saturating_sub(1);
@@ -451,6 +451,9 @@ impl MediaLoadNotify for TapeDrive {
 
         // Move store into I/O thread — all subsequent I/O goes through IoHandle
         let io_handle = io_engine::IoHandle::spawn(store);
+
+        // ---- Phase 2: Brief lock to install the loaded media into drive state ----
+        let mut st = self.state.lock().unwrap();
         st.media_state = Some(DriveMediaState::new(media, io_handle));
         st.activity = DriveActivity::Idle;
         st.backhitch_count = 0;
@@ -464,17 +467,22 @@ impl MediaLoadNotify for TapeDrive {
     }
 
     fn media_unloaded(&self) {
-        let mut st = self.state.lock().unwrap();
-        trace!("tape media unloaded from drive");
+        // ---- Phase 1: Take media state out, flush buffer, release lock ----
+        let taken_media_state = {
+            let mut st = self.state.lock().unwrap();
+            trace!("tape media unloaded from drive");
 
-        // Flush buffer before unloading
-        if let Some(ref mut buf) = st.buffer {
-            buf.flush();
-        }
-        st.buffer = None;
+            // Flush buffer before unloading
+            if let Some(ref mut buf) = st.buffer {
+                buf.flush();
+            }
+            st.buffer = None;
+            st.activity = DriveActivity::Empty;
+            st.media_state.take()
+        }; // state lock released here
 
-        // Flush final metadata to store before dropping
-        if let Some(ref mut ms) = st.media_state {
+        // ---- Phase 2: I/O outside the lock (won't block snapshot calls) ----
+        if let Some(mut ms) = taken_media_state {
             let barcode = ms.media.barcode.clone();
 
             // Sync compression flag from AtomicBool back to media
@@ -506,6 +514,7 @@ impl MediaLoadNotify for TapeDrive {
                 warn!(barcode, error = %e, "failed to persist MAM on unload");
             }
             trace!(barcode, "flushed tape metadata to redb store");
+            // DriveMediaState dropped here — redb + file handles close automatically
         }
 
         // Reset shared partition page state
@@ -517,10 +526,6 @@ impl MediaLoadNotify for TapeDrive {
 
         // Update shared stats (media unloaded)
         Self::refresh_stats(&self.drive_stats, None, self.generation);
-
-        // Drop the DriveMediaState — redb + file handles close automatically
-        st.media_state = None;
-        st.activity = DriveActivity::Empty;
     }
 }
 

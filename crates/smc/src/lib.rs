@@ -18,7 +18,9 @@ pub mod vpd;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use chrono::Utc;
 use iscsi_target::{MediaLoadNotify, ScsiDevice, ScsiResult, SimulationClock};
+use tokio::sync::broadcast;
 use tracing::trace;
 
 use commands::opcodes::*;
@@ -55,6 +57,8 @@ pub struct MediaChanger {
     clock: Arc<SimulationClock>,
     /// Serializes robot operations (one-at-a-time, like a real robot arm).
     robot_busy: Mutex<()>,
+    /// WebSocket broadcast sender for notifying the frontend of state changes.
+    ws_tx: Option<broadcast::Sender<()>>,
 }
 
 impl MediaChanger {
@@ -67,6 +71,7 @@ impl MediaChanger {
         drives: Vec<Arc<dyn MediaLoadNotify>>,
         timing: RobotTimingModel,
         clock: Arc<SimulationClock>,
+        ws_tx: Option<broadcast::Sender<()>>,
     ) -> Self {
         let vendor = "QUANTUM ";
         let product = format!("{:<16}", model);
@@ -134,6 +139,7 @@ impl MediaChanger {
             timing,
             clock,
             robot_busy: Mutex::new(()),
+            ws_tx,
         }
     }
 
@@ -141,6 +147,35 @@ impl MediaChanger {
     pub fn snapshot(&self) -> ChangerSnapshot {
         let st = self.state.lock().unwrap();
         ChangerSnapshot::from_state(&st, &self.vendor, &self.product, &self.serial)
+    }
+
+    /// Send a WebSocket notification to the frontend.
+    fn notify_ws(&self) {
+        if let Some(tx) = &self.ws_tx {
+            let _ = tx.send(());
+        }
+    }
+
+    /// Convert a SCSI element address to a physical rail position.
+    /// Drives, I/E ports, and slots are all on the same linear rail — the SCSI
+    /// address namespaces (0x0001, 0x0010, 0x0100, 0x1000) don't reflect physical
+    /// proximity.  We map them into a single linear space:
+    ///   drives 0..N, then I/E, then slots.
+    fn element_rail_position(&self, addr: u16) -> u16 {
+        let st = self.state.lock().unwrap();
+        if addr >= st.start_drive && addr < st.start_drive + st.num_drives {
+            // Drive element → position = drive index
+            addr - st.start_drive
+        } else if addr >= st.start_iee && addr < st.start_iee + st.num_iee {
+            // I/E element → position after drives
+            st.num_drives + (addr - st.start_iee)
+        } else if addr >= st.start_slot && addr < st.start_slot + st.num_slots {
+            // Storage element → position after drives + I/E
+            st.num_drives + st.num_iee + (addr - st.start_slot)
+        } else {
+            // MTE / unknown → position 0
+            0
+        }
     }
 
     /// MOVE MEDIUM with robot serialization and timing.
@@ -154,27 +189,65 @@ impl MediaChanger {
             }
         };
 
-        let slot_distance = params.source.abs_diff(params.dest);
+        // Convert SCSI element addresses to physical rail positions for distance calc
+        let src_pos = self.element_rail_position(params.source);
+        let dst_pos = self.element_rail_position(params.dest);
+        let slot_distance = src_pos.abs_diff(dst_pos);
 
         // 2. Lock robot_busy (serialize with other robot operations)
         let _robot = self.robot_busy.lock().unwrap();
 
-        // 3. Compute timing and sleep
-        let secs = self.timing.estimate_move_sec(
+        // 3. Compute timing (wall-clock = real_time / speed_factor)
+        let real_secs = self.timing.estimate_move_sec(
             slot_distance,
             params.source_is_drive,
             params.dest_is_drive,
         );
-        self.clock.sleep_sync(Duration::from_secs_f64(secs));
+        let speed = self.clock.speed_factor();
+        let wall_secs = if speed.is_infinite() || speed <= 0.0 {
+            0.0
+        } else {
+            real_secs / speed
+        };
 
-        // 4. Re-lock state, re-validate, and execute
-        let mut st = self.state.lock().unwrap();
-        commands::move_medium::execute_move_medium(
-            params.source,
-            params.dest,
-            &mut st,
-            &self.drives,
-        )
+        // 4. Set Moving state with timing info
+        {
+            let mut st = self.state.lock().unwrap();
+            st.library_state = state::LibraryState::Moving {
+                source: params.source,
+                dest: params.dest,
+            };
+            st.robot_started_at_ms = Some(Utc::now().timestamp_millis());
+            st.robot_estimated_secs = Some(wall_secs);
+        }
+        self.notify_ws();
+
+        // 5. Sleep for the computed duration (sleep_sync applies speed factor internally)
+        self.clock.sleep_sync(Duration::from_secs_f64(real_secs));
+
+        // 6. Re-lock state, re-validate, execute element transfer, then release lock.
+        //    Drive notifications are deferred to avoid holding the lock during slow I/O.
+        let (result, notifications) = {
+            let mut st = self.state.lock().unwrap();
+            let (result, notifications) = commands::move_medium::execute_move_medium(
+                params.source,
+                params.dest,
+                &mut st,
+                &self.drives,
+            );
+
+            // 7. Reset to Ready and clear timing fields (still under lock)
+            st.library_state = state::LibraryState::Ready;
+            st.robot_started_at_ms = None;
+            st.robot_estimated_secs = None;
+
+            (result, notifications)
+        }; // state lock released here
+
+        // 8. Apply drive notifications outside the lock (media_loaded opens tape files = slow)
+        commands::move_medium::DriveNotification::apply_all(notifications);
+
+        result
     }
 
     /// INITIALIZE ELEMENT STATUS with robot serialization and timing.
@@ -187,9 +260,34 @@ impl MediaChanger {
         // Serialize with other robot operations
         let _robot = self.robot_busy.lock().unwrap();
 
-        // Simulate inventory scan time
-        let secs = self.timing.estimate_scan_sec(num_elements);
-        self.clock.sleep_sync(Duration::from_secs_f64(secs));
+        // Compute timing (wall-clock = real_time / speed_factor)
+        let real_secs = self.timing.estimate_scan_sec(num_elements);
+        let speed = self.clock.speed_factor();
+        let wall_secs = if speed.is_infinite() || speed <= 0.0 {
+            0.0
+        } else {
+            real_secs / speed
+        };
+
+        // Set Scanning state with timing info
+        {
+            let mut st = self.state.lock().unwrap();
+            st.library_state = state::LibraryState::Scanning;
+            st.robot_started_at_ms = Some(Utc::now().timestamp_millis());
+            st.robot_estimated_secs = Some(wall_secs);
+        }
+        self.notify_ws();
+
+        // Simulate inventory scan time (sleep_sync applies speed factor internally)
+        self.clock.sleep_sync(Duration::from_secs_f64(real_secs));
+
+        // Reset to Ready
+        {
+            let mut st = self.state.lock().unwrap();
+            st.library_state = state::LibraryState::Ready;
+            st.robot_started_at_ms = None;
+            st.robot_estimated_secs = None;
+        }
 
         sense::good()
     }
