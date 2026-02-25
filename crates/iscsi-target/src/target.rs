@@ -135,8 +135,8 @@ async fn handle_connection(
     let mut stat_sn: u32 = 0;
     let mut exp_cmd_sn: u32 = 1;
     let mut guard = SessionGuard::new(registry.clone());
-    let mut conn_stats: Option<Arc<ConnectionStats>> = None;
-    let mut conn_scsi_log: Option<Arc<ScsiCommandLog>> = None;
+    let conn_stats: Option<Arc<ConnectionStats>>;
+    let conn_scsi_log: Option<Arc<ScsiCommandLog>>;
 
     // ── Login phase ─────────────────────────────────────────────────────
     loop {
