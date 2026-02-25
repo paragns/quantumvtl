@@ -146,9 +146,10 @@ pub fn handle_mode_select_6(
             break;
         }
 
-        let _result =
-            registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
-        // TODO: handle errors from apply_select
+        if let Err(msg) = registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]) {
+            tracing::warn!(page_code, error = msg, "MODE SELECT apply_select failed");
+            return SenseBuilder::invalid_field_in_parameter_list().to_check_condition();
+        }
 
         offset = page_data_end;
     }
@@ -187,8 +188,10 @@ pub fn handle_mode_select_10(
             break;
         }
 
-        let _result =
-            registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]);
+        if let Err(msg) = registry.apply_select(page_code, 0, &data_out[page_data_start..page_data_end]) {
+            tracing::warn!(page_code, error = msg, "MODE SELECT(10) apply_select failed");
+            return SenseBuilder::invalid_field_in_parameter_list().to_check_condition();
+        }
         offset = page_data_end;
     }
 
