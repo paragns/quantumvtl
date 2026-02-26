@@ -12,7 +12,7 @@ use smc::MediaChanger;
 use smc::timing::RobotTimingModel;
 use ssc::TapeDrive;
 use ssc::media::geometry::LtoGeneration;
-use vtld::admin::{AdminState, run_admin_server};
+use vtld::admin::{AdminState, ConfigSnapshot, run_admin_server};
 use vtld::config::load_config;
 use vtld::store::Store;
 
@@ -151,6 +151,23 @@ async fn main() -> anyhow::Result<()> {
         traced_drives.push(Arc::new(traced));
     }
 
+    let config_snapshot = ConfigSnapshot {
+        listen_host: config.listen.host.clone(),
+        listen_admin_port: config.listen.admin_port,
+        store_path: config.store.path.clone(),
+        iscsi_port: config.iscsi.port,
+        iscsi_iqn: config.iscsi.iqn.clone(),
+        library_model: config.library.model.clone(),
+        library_serial: config.library.serial.clone(),
+        library_data_dir: config.library.data_dir.clone(),
+        library_drives: config.library.drives,
+        library_slots: config.library.slots,
+        library_media_count: config.library.media.len(),
+        library_media_barcodes: config.library.media.iter().map(|m| m.barcode.clone()).collect(),
+        user_count: config.users.len(),
+        initial_simulation_speed: config.simulation_speed,
+    };
+
     let admin_state = AdminState {
         store,
         users: config.users,
@@ -164,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
         drive_logs,
         data_dir: data_dir.clone(),
         simulation_clock,
+        config_snapshot,
     };
 
     let mut iscsi_target = Target::new(config.iscsi.iqn.clone());

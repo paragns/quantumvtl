@@ -42,6 +42,25 @@ pub struct AdminState {
     pub drive_logs: Vec<Arc<ScsiCommandLog>>,
     pub data_dir: std::path::PathBuf,
     pub simulation_clock: Arc<SimulationClock>,
+    pub config_snapshot: ConfigSnapshot,
+}
+
+#[derive(Clone)]
+pub struct ConfigSnapshot {
+    pub listen_host: String,
+    pub listen_admin_port: u16,
+    pub store_path: String,
+    pub iscsi_port: u16,
+    pub iscsi_iqn: String,
+    pub library_model: String,
+    pub library_serial: String,
+    pub library_data_dir: String,
+    pub library_drives: usize,
+    pub library_slots: usize,
+    pub library_media_count: usize,
+    pub library_media_barcodes: Vec<String>,
+    pub user_count: usize,
+    pub initial_simulation_speed: f64,
 }
 
 #[derive(Embed)]
@@ -158,6 +177,30 @@ struct LibrarySnapshot {
 struct ConfigEntry {
     key: String,
     value: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct FullConfigResponse {
+    sections: Vec<ConfigSection>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ConfigSection {
+    name: String,
+    description: String,
+    settings: Vec<ConfigSetting>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+struct ConfigSetting {
+    key: String,
+    description: String,
+    value: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    default_value: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_value: Option<serde_json::Value>,
+    required: bool,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -724,6 +767,182 @@ async fn config_show(
 
 #[utoipa::path(
     get,
+    path = "/api/config/full",
+    tag = "Config",
+    responses(
+        (status = 200, description = "Full configuration with descriptions and defaults", body = FullConfigResponse)
+    )
+)]
+async fn config_full(
+    State(state): State<AdminState>,
+) -> Result<Json<FullConfigResponse>, AdminError> {
+    let snap = &state.config_snapshot;
+
+    // Check live simulation speed
+    let live_speed = state.simulation_clock.speed_factor();
+    let sim_current = if (live_speed - snap.initial_simulation_speed).abs() > f64::EPSILON {
+        Some(serde_json::json!(live_speed))
+    } else {
+        None
+    };
+
+    let media_value = if snap.library_media_count > 0 {
+        serde_json::json!({
+            "count": snap.library_media_count,
+            "barcodes": snap.library_media_barcodes,
+        })
+    } else {
+        serde_json::json!({ "count": 0 })
+    };
+
+    let sections = vec![
+        ConfigSection {
+            name: "Listen".into(),
+            description: "Network bind addresses for the admin UI and API".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "listen.host".into(),
+                    description: "IP address to bind the server to".into(),
+                    value: serde_json::json!(snap.listen_host),
+                    default_value: Some(serde_json::json!("0.0.0.0")),
+                    current_value: None,
+                    required: false,
+                },
+                ConfigSetting {
+                    key: "listen.admin_port".into(),
+                    description: "TCP port for the admin web UI and REST API".into(),
+                    value: serde_json::json!(snap.listen_admin_port),
+                    default_value: Some(serde_json::json!(8081)),
+                    current_value: None,
+                    required: false,
+                },
+            ],
+        },
+        ConfigSection {
+            name: "Store".into(),
+            description: "Embedded database storage".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "store.path".into(),
+                    description: "Path to the redb database file".into(),
+                    value: serde_json::json!(snap.store_path),
+                    default_value: Some(serde_json::json!("vtld.redb")),
+                    current_value: None,
+                    required: false,
+                },
+            ],
+        },
+        ConfigSection {
+            name: "iSCSI".into(),
+            description: "iSCSI target configuration".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "iscsi.port".into(),
+                    description: "TCP port the iSCSI target listens on".into(),
+                    value: serde_json::json!(snap.iscsi_port),
+                    default_value: Some(serde_json::json!(3260)),
+                    current_value: None,
+                    required: false,
+                },
+                ConfigSetting {
+                    key: "iscsi.iqn".into(),
+                    description: "iSCSI Qualified Name identifying this target".into(),
+                    value: serde_json::json!(snap.iscsi_iqn),
+                    default_value: Some(serde_json::json!("iqn.2024-01.com.quantumvtl:vtl")),
+                    current_value: None,
+                    required: false,
+                },
+            ],
+        },
+        ConfigSection {
+            name: "Library".into(),
+            description: "Virtual tape library hardware emulation".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "library.model".into(),
+                    description: "Model name reported in SCSI INQUIRY data".into(),
+                    value: serde_json::json!(snap.library_model),
+                    default_value: None,
+                    current_value: None,
+                    required: true,
+                },
+                ConfigSetting {
+                    key: "library.serial".into(),
+                    description: "Serial number reported in SCSI INQUIRY and VPD pages".into(),
+                    value: serde_json::json!(snap.library_serial),
+                    default_value: None,
+                    current_value: None,
+                    required: true,
+                },
+                ConfigSetting {
+                    key: "library.data_dir".into(),
+                    description: "Directory where virtual tape media data files are stored".into(),
+                    value: serde_json::json!(snap.library_data_dir),
+                    default_value: None,
+                    current_value: None,
+                    required: true,
+                },
+                ConfigSetting {
+                    key: "library.drives".into(),
+                    description: "Number of tape drives in the library".into(),
+                    value: serde_json::json!(snap.library_drives),
+                    default_value: None,
+                    current_value: None,
+                    required: true,
+                },
+                ConfigSetting {
+                    key: "library.slots".into(),
+                    description: "Number of storage slots for tape media".into(),
+                    value: serde_json::json!(snap.library_slots),
+                    default_value: None,
+                    current_value: None,
+                    required: true,
+                },
+                ConfigSetting {
+                    key: "library.media".into(),
+                    description: "Pre-loaded media cartridges".into(),
+                    value: media_value,
+                    default_value: Some(serde_json::json!({ "count": 0 })),
+                    current_value: None,
+                    required: false,
+                },
+            ],
+        },
+        ConfigSection {
+            name: "Users".into(),
+            description: "Authentication accounts (passwords hidden)".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "users".into(),
+                    description: "Number of configured user accounts".into(),
+                    value: serde_json::json!(snap.user_count),
+                    default_value: Some(serde_json::json!(0)),
+                    current_value: None,
+                    required: false,
+                },
+            ],
+        },
+        ConfigSection {
+            name: "Simulation".into(),
+            description: "Tape operation timing simulation".into(),
+            settings: vec![
+                ConfigSetting {
+                    key: "simulation_speed".into(),
+                    description: "Speed multiplier for tape operations (1.0 = real-time)".into(),
+                    value: serde_json::json!(snap.initial_simulation_speed),
+                    default_value: Some(serde_json::json!(1.0)),
+                    current_value: sim_current,
+                    required: false,
+                },
+            ],
+        },
+    ];
+
+    Ok(Json(FullConfigResponse { sections }))
+}
+
+#[utoipa::path(
+    get,
     path = "/api/vtl/changer",
     tag = "VTL",
     responses(
@@ -1138,6 +1357,7 @@ async fn session_scsi_log_entry(
         vtl_drive_detail,
         vtl_sessions,
         config_show,
+        config_full,
         scsi_log_changer,
         scsi_log_drive,
         scsi_log_entry,
@@ -1157,6 +1377,9 @@ async fn session_scsi_log_entry(
         DriveDetailResponse,
         SessionResponse,
         ConfigEntry,
+        FullConfigResponse,
+        ConfigSection,
+        ConfigSetting,
         ScsiLogSummaryEntry,
         ScsiLogResponse,
         ScsiCommandDetailResponse,
@@ -1378,6 +1601,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/api/vtl/changer", get(vtl_changer))
         .route("/api/vtl/sessions", get(vtl_sessions))
         .route("/api/config", get(config_show))
+        .route("/api/config/full", get(config_full))
         .route("/api/vtl/scsi-log/changer", get(scsi_log_changer))
         .route("/api/vtl/scsi-log/drive/{id}", get(scsi_log_drive))
         .route(
