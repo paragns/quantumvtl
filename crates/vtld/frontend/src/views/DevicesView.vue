@@ -250,6 +250,10 @@ function formatRate(bytesPerSec: number | null): string {
                 <span class="stat-value">{{ d.loaded ? d.file_number : '--' }}</span>
                 <span class="stat-label">Filemark</span>
               </div>
+              <div class="stat" v-if="d.current_wrap != null">
+                <span class="stat-value">{{ d.current_wrap }} / {{ d.total_wraps }}</span>
+                <span class="stat-label">Wrap</span>
+              </div>
               <div class="stat">
                 <span class="stat-value" :class="{ flag: d.at_bop || d.at_eod }">{{ d.at_bop ? 'BOP' : d.at_eod ? 'EOD' : '--' }}</span>
                 <span class="stat-label">Position</span>
@@ -263,12 +267,8 @@ function formatRate(bytesPerSec: number | null): string {
                 <span class="stat-label">Data Rate</span>
               </div>
               <div class="stat">
-                <span class="stat-value">{{ d.loaded ? d.write_buffer_pct.toFixed(0) + '%' : '--' }}</span>
-                <span class="stat-label">Write Buf</span>
-              </div>
-              <div class="stat">
-                <span class="stat-value">{{ d.loaded ? d.read_cache_pct.toFixed(0) + '%' : '--' }}</span>
-                <span class="stat-label">Read Cache</span>
+                <span class="stat-value">{{ d.loaded ? Math.max(d.write_buffer_pct, d.read_cache_pct).toFixed(0) + '%' : '--' }}</span>
+                <span class="stat-label">Buffer</span>
               </div>
               <div class="stat">
                 <span class="stat-value">{{ d.loaded ? d.backhitch_count_this_mount : '--' }}</span>

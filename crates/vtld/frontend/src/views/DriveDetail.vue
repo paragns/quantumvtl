@@ -71,24 +71,24 @@ function formatRate(bytesPerSec: number | null): string {
           <div class="stat"><span class="stat-value">{{ drive.partition }}</span><span class="stat-label">Partition</span></div>
           <div class="stat"><span class="stat-value">{{ drive.block_number }}</span><span class="stat-label">Block</span></div>
           <div class="stat"><span class="stat-value">{{ drive.file_number }}</span><span class="stat-label">Filemark</span></div>
+          <div class="stat" v-if="drive.current_wrap != null"><span class="stat-value">{{ drive.current_wrap }} / {{ drive.total_wraps }}</span><span class="stat-label">Wrap</span></div>
           <div class="stat" v-if="drive.at_bop"><span class="stat-value flag">BOP</span><span class="stat-label">Position</span></div>
           <div class="stat" v-if="drive.at_eod"><span class="stat-value flag">EOD</span><span class="stat-label">Position</span></div>
         </div>
         <p v-else class="empty-state">No media loaded</p>
       </section>
 
-      <!-- Wrap Position -->
+      <!-- Physical Position -->
       <section class="card" v-if="drive.current_wrap != null">
         <h3>Physical Position</h3>
         <div class="stats">
-          <div class="stat"><span class="stat-value">{{ drive.current_wrap }} / {{ drive.total_wraps }}</span><span class="stat-label">Wrap</span></div>
           <div class="stat" v-if="drive.tape_speed != null"><span class="stat-value">{{ drive.tape_speed }}</span><span class="stat-label">Speed</span></div>
         </div>
         <div class="progress-wrap" v-if="drive.position_in_wrap_pct != null">
           <div class="progress-bar">
             <div class="progress-fill" :style="{ width: drive.position_in_wrap_pct + '%' }"></div>
           </div>
-          <span class="progress-label">{{ drive.position_in_wrap_pct.toFixed(1) }}% through wrap</span>
+          <span class="progress-label">{{ drive.position_in_wrap_pct.toFixed(1) }}% through wrap {{ drive.current_wrap }} of {{ drive.total_wraps }}</span>
         </div>
       </section>
 
@@ -96,8 +96,7 @@ function formatRate(bytesPerSec: number | null): string {
       <section class="card">
         <h3>Buffer</h3>
         <div class="stats">
-          <div class="stat"><span class="stat-value">{{ drive.write_buffer_pct.toFixed(0) }}%</span><span class="stat-label">Write Buffer</span></div>
-          <div class="stat"><span class="stat-value">{{ drive.read_cache_pct.toFixed(0) }}%</span><span class="stat-label">Read Cache</span></div>
+          <div class="stat"><span class="stat-value">{{ Math.max(drive.write_buffer_pct, drive.read_cache_pct).toFixed(0) }}%</span><span class="stat-label">Buffer</span></div>
           <div class="stat"><span class="stat-value">{{ drive.objects_in_buffer }}</span><span class="stat-label">Objects</span></div>
           <div class="stat"><span class="stat-value">{{ drive.buffer_state }}</span><span class="stat-label">State</span></div>
         </div>
