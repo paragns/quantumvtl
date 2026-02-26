@@ -1,13 +1,34 @@
 //! Positioning commands: SPACE(6), REWIND, READ POSITION, LOCATE, READ BLOCK LIMITS.
 
+use std::time::Duration;
+
+use crate::media::geometry::TapeGeometry;
+use crate::media::position::{logical_to_physical, wrap_distance};
 use crate::media::tape::DriveMediaState;
 use crate::sense::{self, SenseBuilder};
+use crate::timing::TimingModel;
 use crate::ScsiResult;
+use iscsi_target::SimulationClock;
 use tracing::trace;
 
 /// Handle REWIND (01h).
-pub fn handle_rewind(media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_rewind(
+    media_state: &mut DriveMediaState,
+    clock: &SimulationClock,
+    timing: &TimingModel,
+    geometry: &TapeGeometry,
+) -> ScsiResult {
     let old_part = media_state.position.partition;
+
+    // Estimate current physical position for delay calculation.
+    let block_size: u64 = 4 * 1024 * 1024; // 4 MiB per block
+    let bytes_before = media_state.position.block_number * block_size;
+    let phys = logical_to_physical(bytes_before, geometry.native_capacity_bytes, geometry);
+    let delay = timing.rewind_delay_secs(phys.wrap, geometry.num_wraps);
+    if delay > 0.0 {
+        clock.sleep_sync(Duration::from_secs_f64(delay));
+    }
+
     media_state.position.block_number = 0;
     media_state.position.file_number = 0;
     media_state.position.partition = 0;
@@ -162,7 +183,13 @@ pub fn handle_read_block_limits(media_state: &DriveMediaState) -> ScsiResult {
 }
 
 /// Handle LOCATE(10) (2Bh).
-pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_locate_10(
+    cdb: &[u8],
+    media_state: &mut DriveMediaState,
+    clock: &SimulationClock,
+    timing: &TimingModel,
+    geometry: &TapeGeometry,
+) -> ScsiResult {
     let _immed = cdb[1] & 0x01 != 0;
     let cp = cdb[1] & 0x02 != 0;
     let dest_type = (cdb[1] >> 2) & 0x03;
@@ -172,6 +199,11 @@ pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
         | ((cdb[4] as u64) << 16)
         | ((cdb[5] as u64) << 8)
         | (cdb[6] as u64);
+
+    // Capture current position for delay calculation.
+    let block_size: u64 = 4 * 1024 * 1024; // 4 MiB per block
+    let from_bytes = media_state.position.block_number * block_size;
+    let from_phys = logical_to_physical(from_bytes, geometry.native_capacity_bytes, geometry);
 
     // Handle partition change if CP (Change Partition) bit is set
     if cp {
@@ -209,6 +241,15 @@ pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
         _ => return SenseBuilder::invalid_field_in_cdb().to_check_condition(),
     }
 
+    // Compute destination physical position and apply seek delay.
+    let to_bytes = media_state.position.block_number * block_size;
+    let to_phys = logical_to_physical(to_bytes, geometry.native_capacity_bytes, geometry);
+    let wraps = wrap_distance(&from_phys, &to_phys);
+    let delay = timing.seek_delay_secs(wraps);
+    if delay > 0.0 {
+        clock.sleep_sync(Duration::from_secs_f64(delay));
+    }
+
     // Recompute file_number (approximate)
     media_state.position.file_number = count_filemarks_before(
         media_state.current_partition(),
@@ -228,7 +269,13 @@ pub fn handle_locate_10(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
 }
 
 /// Handle LOCATE(16) (92h).
-pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult {
+pub fn handle_locate_16(
+    cdb: &[u8],
+    media_state: &mut DriveMediaState,
+    clock: &SimulationClock,
+    timing: &TimingModel,
+    geometry: &TapeGeometry,
+) -> ScsiResult {
     let _immed = cdb[1] & 0x01 != 0;
     let cp = cdb[1] & 0x02 != 0;
     let dest_type = (cdb[1] >> 2) & 0x03;
@@ -242,6 +289,11 @@ pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
         | ((cdb[9] as u64) << 16)
         | ((cdb[10] as u64) << 8)
         | (cdb[11] as u64);
+
+    // Capture current position for delay calculation.
+    let block_size: u64 = 4 * 1024 * 1024; // 4 MiB per block
+    let from_bytes = media_state.position.block_number * block_size;
+    let from_phys = logical_to_physical(from_bytes, geometry.native_capacity_bytes, geometry);
 
     // Handle partition change if CP (Change Partition) bit is set
     if cp {
@@ -265,6 +317,15 @@ pub fn handle_locate_16(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiRe
                 media_state.current_partition().records.len() as u64;
         }
         _ => return SenseBuilder::invalid_field_in_cdb().to_check_condition(),
+    }
+
+    // Compute destination physical position and apply seek delay.
+    let to_bytes = media_state.position.block_number * block_size;
+    let to_phys = logical_to_physical(to_bytes, geometry.native_capacity_bytes, geometry);
+    let wraps = wrap_distance(&from_phys, &to_phys);
+    let delay = timing.seek_delay_secs(wraps);
+    if delay > 0.0 {
+        clock.sleep_sync(Duration::from_secs_f64(delay));
     }
 
     media_state.position.file_number = count_filemarks_before(

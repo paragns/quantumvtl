@@ -72,7 +72,7 @@ impl TimingModel {
         }
     }
 
-    /// Default timing model (LTO-9).
+    /// Default timing model for the given LTO generation.
     pub fn default_for_generation(gen: crate::media::geometry::LtoGeneration) -> Self {
         use crate::media::geometry::LtoGeneration::*;
         match gen {
@@ -81,5 +81,25 @@ impl TimingModel {
             Lto8 | Lto8M => Self::lto8(),
             Lto9 => Self::lto9(),
         }
+    }
+
+    /// Estimate seek time (seconds) for a LOCATE spanning `wrap_distance` wraps.
+    ///
+    /// Returns 0 for zero-distance seeks (already at destination).
+    pub fn seek_delay_secs(&self, wrap_distance: u32) -> f64 {
+        if wrap_distance == 0 {
+            return 0.0;
+        }
+        self.locate_per_wrap_sec * wrap_distance as f64
+    }
+
+    /// Estimate rewind time (seconds) based on current wrap position.
+    ///
+    /// Scales linearly from 0 (already at BOT) to `rewind_full_sec` (at the last wrap).
+    pub fn rewind_delay_secs(&self, wrap_position: u32, total_wraps: u32) -> f64 {
+        if total_wraps == 0 || wrap_position == 0 {
+            return 0.0;
+        }
+        self.rewind_full_sec * (wrap_position as f64 / total_wraps as f64)
     }
 }

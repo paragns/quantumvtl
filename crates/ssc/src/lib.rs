@@ -68,6 +68,8 @@ pub struct TapeDrive {
     partition_state: SharedPartitionState,
     /// Shared drive statistics (consumed by live log pages).
     drive_stats: SharedDriveStats,
+    /// Timing model for simulated physical delays.
+    timing: timing::TimingModel,
     /// Simulation clock for timing delays.
     clock: Arc<SimulationClock>,
 }
@@ -139,6 +141,7 @@ impl TapeDrive {
             compression_enabled: dce,
             partition_state,
             drive_stats,
+            timing: timing::TimingModel::default_for_generation(generation),
             clock,
         }
     }
@@ -618,7 +621,12 @@ impl ScsiDevice for TapeDrive {
                 if let Some(ref mut buf) = buffer {
                     buf.flush();
                 }
-                commands::position::handle_rewind(media_state)
+                commands::position::handle_rewind(
+                    media_state,
+                    &self.clock,
+                    &self.timing,
+                    self.generation.geometry(),
+                )
             }
             READ_6 => {
                 commands::read::handle_read_6(cdb, media_state, buffer, &self.clock)
@@ -638,13 +646,25 @@ impl ScsiDevice for TapeDrive {
                 if let Some(ref mut buf) = buffer {
                     buf.flush();
                 }
-                commands::position::handle_locate_10(cdb, media_state)
+                commands::position::handle_locate_10(
+                    cdb,
+                    media_state,
+                    &self.clock,
+                    &self.timing,
+                    self.generation.geometry(),
+                )
             }
             LOCATE_16 => {
                 if let Some(ref mut buf) = buffer {
                     buf.flush();
                 }
-                commands::position::handle_locate_16(cdb, media_state)
+                commands::position::handle_locate_16(
+                    cdb,
+                    media_state,
+                    &self.clock,
+                    &self.timing,
+                    self.generation.geometry(),
+                )
             }
             ERASE_6 => commands::erase::handle_erase(cdb, media_state),
             FORMAT_MEDIUM => {
