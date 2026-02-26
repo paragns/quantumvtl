@@ -6,12 +6,13 @@ use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
 use tracing::{trace, warn};
 
-/// Handle WRITE FILEMARKS(6) (10h) — CDB[2-4]=count.
+/// Handle WRITE FILEMARKS(6) (10h) — CDB[1] bit 0=IMMED, CDB[2-4]=count.
 pub fn handle_write_filemarks(
     cdb: &[u8],
     media_state: &mut DriveMediaState,
     buffer: &mut Option<DriveBuffer>,
 ) -> ScsiResult {
+    let immed = cdb[1] & 0x01 != 0;
     let count = ((cdb[2] as u32) << 16) | ((cdb[3] as u32) << 8) | (cdb[4] as u32);
 
     if media_state.media.write_protected {
@@ -26,9 +27,18 @@ pub fn handle_write_filemarks(
         return sense::good();
     }
 
-    // Flush buffer before writing filemarks (immed=0 behavior)
+    // Flush buffer before writing filemarks
     if let Some(ref mut buf) = buffer {
         buf.flush();
+    }
+
+    // For immediate filemarks, fsync the data file to ensure all pending
+    // data is durable on disk before we record the filemark.
+    if immed {
+        if let Err(e) = media_state.io_handle.flush_sync() {
+            warn!(error = %e, "failed to fsync data file before immediate filemark");
+            return SenseBuilder::medium_error().to_check_condition();
+        }
     }
 
     let pos = media_state.position.block_number as usize;

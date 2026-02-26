@@ -323,9 +323,7 @@ fn io_thread_main(mut store: TapeStore, rx: Receiver<IoCommand>) {
                 let _ = reply.send(result);
             }
             IoCommand::Flush { reply } => {
-                // Data file is flushed after each batch, so this is a no-op
-                // unless we want an explicit sync_data call.
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(store.sync_data());
             }
             IoCommand::Truncate { new_len, reply } => {
                 let result = store.truncate_data(new_len);

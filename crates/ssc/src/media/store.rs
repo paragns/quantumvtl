@@ -117,6 +117,11 @@ impl TapeStore {
         Ok(buf)
     }
 
+    /// Fsync the .data file to ensure all written data is durable on disk.
+    pub fn sync_data(&self) -> io::Result<()> {
+        self.data_file.sync_data()
+    }
+
     /// Truncate the .data file to `new_len` bytes.
     pub fn truncate_data(&mut self, new_len: u64) -> io::Result<()> {
         self.data_file.set_len(new_len)?;
