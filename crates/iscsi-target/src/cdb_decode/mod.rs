@@ -41,6 +41,7 @@ pub struct DataField {
     pub hex_value: String,
     pub decoded: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "utoipa", schema(no_recursion))]
     pub children: Option<Vec<DataField>>,
 }
 

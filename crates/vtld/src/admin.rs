@@ -1177,7 +1177,20 @@ async fn session_scsi_log_entry(
 struct ApiDoc;
 
 async fn openapi_spec() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
+    // Cache the spec and build it on a thread with sufficient stack space.
+    // The utoipa-generated `ApiDoc::openapi()` is deeply recursive and can
+    // overflow the default 2 MB tokio worker-thread stack.
+    static SPEC: std::sync::OnceLock<utoipa::openapi::OpenApi> = std::sync::OnceLock::new();
+    let spec = SPEC.get_or_init(|| {
+        std::thread::Builder::new()
+            .name("openapi-init".into())
+            .stack_size(8 * 1024 * 1024)
+            .spawn(ApiDoc::openapi)
+            .expect("failed to spawn openapi-init thread")
+            .join()
+            .expect("openapi-init thread panicked")
+    });
+    Json(spec.clone())
 }
 
 // --- WebSocket ---
@@ -1408,4 +1421,24 @@ pub async fn run_admin_server(
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Prove that generating the OpenAPI spec does not overflow the stack.
+    ///
+    /// `#[tokio::test]` creates a runtime with the default 2 MB worker-thread
+    /// stack.  The handler must cope via the `OnceLock` + dedicated-thread
+    /// approach — if it tried to call `ApiDoc::openapi()` inline, this test
+    /// would crash with a stack overflow.
+    #[tokio::test]
+    async fn openapi_spec_does_not_overflow_stack() {
+        let resp = openapi_spec().await;
+        let json = serde_json::to_value(&resp.0).unwrap();
+        assert!(json.get("openapi").is_some(), "missing 'openapi' key");
+        assert!(json.get("paths").is_some(), "missing 'paths' key");
+        assert!(json.get("components").is_some(), "missing 'components' key");
+    }
 }
