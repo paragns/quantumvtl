@@ -1,0 +1,3 @@
+[submodule "ext/iscsi-target"]
+	path = ext/iscsi-target
+	url = git@gitlab.mdh.quantum.com:tape/iscsi-target.git
