@@ -1,3 +1,4 @@
+pub mod dedup;
 pub mod geometry;
 pub mod mam;
 pub mod position;

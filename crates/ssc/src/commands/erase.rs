@@ -56,6 +56,12 @@ pub fn handle_erase(cdb: &[u8], media_state: &mut DriveMediaState) -> ScsiResult
                             max_end = end;
                         }
                     }
+                    RecordDescriptor::DedupData { offsets_offset, num_chunks, .. } => {
+                        let end = offsets_offset + (*num_chunks as u64) * 8;
+                        if end > max_end {
+                            max_end = end;
+                        }
+                    }
                     RecordDescriptor::Filemark => {}
                 }
             }

@@ -6,8 +6,10 @@
 
 use std::io;
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+use crate::media::dedup::{DedupStore, DEDUP_BLOCK_SIZE};
 use crate::media::mam::MamAttributes;
 use crate::media::store::TapeStore;
 use crate::media::tape::{RecordDescriptor, TapeMedia, TapePartition};
@@ -17,6 +19,7 @@ pub struct IoWrite {
     pub data: Vec<u8>,
     pub native_length: u32,
     pub is_compressed: bool,
+    pub is_dedup: bool,
     pub partition: u32,
     pub record_num: u64,
 }
@@ -104,12 +107,12 @@ pub struct IoHandle {
 
 impl IoHandle {
     /// Spawn a new I/O thread owning the given TapeStore.
-    pub fn spawn(store: TapeStore) -> Self {
+    pub fn spawn(store: TapeStore, dedup_store: Option<Arc<DedupStore>>) -> Self {
         let (tx, rx) = mpsc::sync_channel::<IoCommand>(64);
         let join_handle = thread::Builder::new()
             .name("tape-io".into())
             .spawn(move || {
-                io_thread_main(store, rx);
+                io_thread_main(store, dedup_store, rx);
             })
             .expect("failed to spawn I/O thread");
 
@@ -307,11 +310,11 @@ impl Drop for IoHandle {
 }
 
 /// Main loop of the I/O thread.
-fn io_thread_main(mut store: TapeStore, rx: Receiver<IoCommand>) {
+fn io_thread_main(mut store: TapeStore, dedup_store: Option<Arc<DedupStore>>, rx: Receiver<IoCommand>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             IoCommand::WriteBatch { writes, reply } => {
-                let result = execute_write_batch(&mut store, writes);
+                let result = execute_write_batch(&mut store, &dedup_store, writes);
                 let _ = reply.send(result);
             }
             IoCommand::Read {
@@ -378,33 +381,76 @@ fn io_thread_main(mut store: TapeStore, rx: Receiver<IoCommand>) {
 /// Execute a batch of writes: append all data, then save all records.
 fn execute_write_batch(
     store: &mut TapeStore,
+    dedup_store: &Option<Arc<DedupStore>>,
     writes: Vec<IoWrite>,
 ) -> io::Result<Vec<WriteResult>> {
     let mut results = Vec::with_capacity(writes.len());
 
     for w in writes {
-        let (offset, length) = store.append_data(&w.data)?;
+        if w.is_dedup {
+            // Dedup path: split into 4KB chunks, store each in dedup store,
+            // write packed offsets to tape's .data file.
+            let ds = dedup_store
+                .as_ref()
+                .expect("is_dedup set but no DedupStore");
 
-        let descriptor = if w.is_compressed {
-            RecordDescriptor::CompressedData {
-                offset,
-                compressed_length: length,
-                native_length: w.native_length,
+            let num_chunks = (w.data.len() + DEDUP_BLOCK_SIZE - 1) / DEDUP_BLOCK_SIZE;
+            let remainder = w.data.len() % DEDUP_BLOCK_SIZE;
+
+            // Store each chunk and collect offsets
+            let mut offsets: Vec<u8> = Vec::with_capacity(num_chunks * 8);
+            for i in 0..num_chunks {
+                let start = i * DEDUP_BLOCK_SIZE;
+                let end = (start + DEDUP_BLOCK_SIZE).min(w.data.len());
+                let chunk = &w.data[start..end];
+                let block_offset = ds.store_block(chunk)?;
+                offsets.extend_from_slice(&block_offset.to_le_bytes());
             }
+
+            // Write packed offsets to tape's .data file
+            let (offsets_offset, _) = store.append_data(&offsets)?;
+
+            let descriptor = RecordDescriptor::DedupData {
+                offsets_offset,
+                num_chunks: num_chunks as u32,
+                remainder: remainder as u16,
+                native_length: w.native_length,
+            };
+
+            let on_disk_bytes = (num_chunks * 8) as u64;
+            let native_bytes = w.native_length as u64;
+
+            store.save_record(w.partition, w.record_num, &descriptor)?;
+
+            results.push(WriteResult {
+                descriptor,
+                native_bytes,
+                on_disk_bytes,
+            });
         } else {
-            RecordDescriptor::Data { offset, length }
-        };
+            let (offset, length) = store.append_data(&w.data)?;
 
-        let on_disk_bytes = length as u64;
-        let native_bytes = w.native_length as u64;
+            let descriptor = if w.is_compressed {
+                RecordDescriptor::CompressedData {
+                    offset,
+                    compressed_length: length,
+                    native_length: w.native_length,
+                }
+            } else {
+                RecordDescriptor::Data { offset, length }
+            };
 
-        store.save_record(w.partition, w.record_num, &descriptor)?;
+            let on_disk_bytes = length as u64;
+            let native_bytes = w.native_length as u64;
 
-        results.push(WriteResult {
-            descriptor,
-            native_bytes,
-            on_disk_bytes,
-        });
+            store.save_record(w.partition, w.record_num, &descriptor)?;
+
+            results.push(WriteResult {
+                descriptor,
+                native_bytes,
+                on_disk_bytes,
+            });
+        }
     }
 
     Ok(results)

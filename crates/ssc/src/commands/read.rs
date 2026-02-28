@@ -1,6 +1,7 @@
 //! READ(6) command handler.
 
 use crate::buffer::DriveBuffer;
+use crate::media::dedup::DEDUP_BLOCK_SIZE;
 use crate::media::tape::{DriveMediaState, RecordDescriptor};
 use crate::sense::{self, SenseBuilder};
 use iscsi_target::SimulationClock;
@@ -81,6 +82,54 @@ fn read_record_data(
                 warn!(error = %e, "failed to decompress tape record");
                 SenseBuilder::medium_error().to_check_condition()
             })
+        }
+        RecordDescriptor::DedupData {
+            offsets_offset,
+            num_chunks,
+            remainder,
+            native_length: _,
+        } => {
+            let ds = ms.dedup_store.as_ref().ok_or_else(|| {
+                warn!("DedupData record but no dedup store available");
+                SenseBuilder::medium_error().to_check_condition()
+            })?;
+
+            // Read packed u64 offsets from per-tape .data file
+            let packed = ms
+                .io_handle
+                .read_sync(*offsets_offset, *num_chunks * 8)
+                .map_err(|e| {
+                    warn!(error = %e, "failed to read dedup offsets from tape store");
+                    SenseBuilder::medium_error().to_check_condition()
+                })?;
+
+            // Reassemble blocks from dedup store
+            let total_size = if *remainder > 0 {
+                (*num_chunks as usize - 1) * DEDUP_BLOCK_SIZE + *remainder as usize
+            } else {
+                *num_chunks as usize * DEDUP_BLOCK_SIZE
+            };
+            let mut data = Vec::with_capacity(total_size);
+
+            for i in 0..*num_chunks as usize {
+                let offset_bytes: [u8; 8] = packed[i * 8..(i + 1) * 8]
+                    .try_into()
+                    .expect("packed offset slice must be 8 bytes");
+                let block_offset = u64::from_le_bytes(offset_bytes);
+                let block = ds.read_block(block_offset).map_err(|e| {
+                    warn!(error = %e, block_offset, "failed to read dedup block");
+                    SenseBuilder::medium_error().to_check_condition()
+                })?;
+
+                if i == *num_chunks as usize - 1 && *remainder > 0 {
+                    // Last chunk: only take the actual bytes
+                    data.extend_from_slice(&block[..*remainder as usize]);
+                } else {
+                    data.extend_from_slice(&block);
+                }
+            }
+
+            Ok(data)
         }
         RecordDescriptor::Filemark => unreachable!(),
     }
