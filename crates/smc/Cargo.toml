@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4"
-iscsi-target = { path = "../iscsi-target" }
+iscsi-target = { path = "../../ext/iscsi-target" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }
 tracing = "0.1"

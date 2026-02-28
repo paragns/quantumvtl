@@ -100,6 +100,8 @@ library:
     - barcode: "TEST04L9"
       capacity_bytes: 18000000000000
 
+simulation_speed: 16.0
+
 users:
   - username: admin
     password: admin
