@@ -80,6 +80,10 @@ fn default_db_path() -> String {
     "vtld.redb".to_owned()
 }
 
+fn default_dedup_cache_blocks() -> usize {
+    65536 // 256MB at 4KB per block
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LibraryConfig {
     pub model: String,
@@ -89,6 +93,12 @@ pub struct LibraryConfig {
     pub slots: usize,
     #[serde(default)]
     pub media: Vec<MediaConfig>,
+    /// Enable block-level deduplication.
+    #[serde(default)]
+    pub dedup: bool,
+    /// Number of 4KB blocks to cache in memory for dedup reads (default: 65536 = 256MB).
+    #[serde(default = "default_dedup_cache_blocks")]
+    pub dedup_cache_blocks: usize,
 }
 
 #[derive(Debug, Deserialize)]

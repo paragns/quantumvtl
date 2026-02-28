@@ -11,3 +11,9 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
 zstd = "0.13"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+dashmap = "6"
+lru = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

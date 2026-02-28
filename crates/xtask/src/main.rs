@@ -61,7 +61,8 @@ fn build_vm() -> bool {
     run_cmd(Command::new("bash").arg(script).current_dir(&repo))
 }
 
-fn test_iscsi() -> bool {
+/// Build vtld and ensure VM image exists. Returns false on failure.
+fn prepare_iscsi_test() -> bool {
     let repo = repo_root();
 
     // Build vtld in release mode first
@@ -84,9 +85,56 @@ fn test_iscsi() -> bool {
         }
     }
 
+    true
+}
+
+/// Run the iSCSI test with dedup enabled or disabled.
+fn run_iscsi_test(dedup: bool) -> bool {
+    let repo = repo_root();
     let script = repo.join("tests/iscsi/iscsi_test_wrapper.sh");
-    eprintln!("Running iSCSI integration test...");
-    run_cmd(Command::new("bash").arg(script).current_dir(&repo))
+    let label = if dedup { "dedup ON" } else { "dedup OFF" };
+    eprintln!("Running iSCSI integration test ({label})...");
+    run_cmd(
+        Command::new("bash")
+            .arg(script)
+            .env("VTLD_DEDUP", if dedup { "true" } else { "false" })
+            .current_dir(&repo),
+    )
+}
+
+fn test_iscsi() -> bool {
+    if !prepare_iscsi_test() {
+        return false;
+    }
+
+    eprintln!("\n========== Phase 1/2: dedup OFF ==========\n");
+    if !run_iscsi_test(false) {
+        eprintln!("ERROR: iSCSI test FAILED with dedup OFF");
+        return false;
+    }
+
+    eprintln!("\n========== Phase 2/2: dedup ON ==========\n");
+    if !run_iscsi_test(true) {
+        eprintln!("ERROR: iSCSI test FAILED with dedup ON");
+        return false;
+    }
+
+    eprintln!("\nBoth dedup variants passed.");
+    true
+}
+
+fn test_iscsi_nodedup() -> bool {
+    if !prepare_iscsi_test() {
+        return false;
+    }
+    run_iscsi_test(false)
+}
+
+fn test_iscsi_dedup() -> bool {
+    if !prepare_iscsi_test() {
+        return false;
+    }
+    run_iscsi_test(true)
 }
 
 fn print_usage() {
@@ -95,9 +143,11 @@ fn print_usage() {
 Usage: cargo xtask <COMMAND>
 
 Commands:
-  build-frontend    Build the Vue.js admin frontend
-  build-vm          Build the iSCSI test VM image
-  test-iscsi        Run iSCSI integration tests (requires KVM)"
+  build-frontend      Build the Vue.js admin frontend
+  build-vm            Build the iSCSI test VM image
+  test-iscsi          Run iSCSI integration tests with dedup OFF then ON (requires KVM)
+  test-iscsi-nodedup  Run iSCSI integration tests with dedup OFF only
+  test-iscsi-dedup    Run iSCSI integration tests with dedup ON only"
     );
 }
 
@@ -121,6 +171,20 @@ fn main() -> ExitCode {
         }
         Some("test-iscsi") => {
             if test_iscsi() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Some("test-iscsi-nodedup") => {
+            if test_iscsi_nodedup() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Some("test-iscsi-dedup") => {
+            if test_iscsi_dedup() {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE

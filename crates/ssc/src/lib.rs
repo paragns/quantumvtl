@@ -25,6 +25,7 @@ use tracing::{trace, warn};
 use buffer::DriveBuffer;
 use commands::opcodes::*;
 use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
+use media::dedup::DedupStore;
 use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
@@ -72,10 +73,18 @@ pub struct TapeDrive {
     timing: timing::TimingModel,
     /// Simulation clock for timing delays.
     clock: Arc<SimulationClock>,
+    /// Shared dedup store (None if dedup is disabled).
+    dedup_store: Option<Arc<DedupStore>>,
 }
 
 impl TapeDrive {
-    pub fn new(serial: &str, generation: LtoGeneration, data_dir: PathBuf, clock: Arc<SimulationClock>) -> Self {
+    pub fn new(
+        serial: &str,
+        generation: LtoGeneration,
+        data_dir: PathBuf,
+        clock: Arc<SimulationClock>,
+        dedup_store: Option<Arc<DedupStore>>,
+    ) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
         let vendor = "IBM     ";
@@ -143,6 +152,7 @@ impl TapeDrive {
             drive_stats,
             timing: timing::TimingModel::default_for_generation(generation),
             clock,
+            dedup_store,
         }
     }
 
@@ -301,6 +311,7 @@ impl TapeDrive {
                         RecordDescriptor::Filemark => filemark_positions.push(i as u64),
                         RecordDescriptor::Data { length, .. } => data_record_sizes.push(*length),
                         RecordDescriptor::CompressedData { native_length, .. } => data_record_sizes.push(*native_length),
+                        RecordDescriptor::DedupData { native_length, .. } => data_record_sizes.push(*native_length),
                     }
                 }
                 PartitionDetail {
@@ -453,11 +464,11 @@ impl MediaLoadNotify for TapeDrive {
         }
 
         // Move store into I/O thread — all subsequent I/O goes through IoHandle
-        let io_handle = io_engine::IoHandle::spawn(store);
+        let io_handle = io_engine::IoHandle::spawn(store, self.dedup_store.clone());
 
         // ---- Phase 2: Brief lock to install the loaded media into drive state ----
         let mut st = self.state.lock().unwrap();
-        st.media_state = Some(DriveMediaState::new(media, io_handle));
+        st.media_state = Some(DriveMediaState::new(media, io_handle, self.dedup_store.clone()));
         st.activity = DriveActivity::Idle;
         st.backhitch_count = 0;
         st.buffer = Some(DriveBuffer::new(

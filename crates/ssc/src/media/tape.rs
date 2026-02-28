@@ -1,5 +1,8 @@
 //! Tape media model — cartridge content, partitions, and records.
 
+use std::sync::Arc;
+
+use super::dedup::DedupStore;
 use super::geometry::{LtoGeneration, TapeGeometry};
 use super::mam::MamAttributes;
 use super::position::LogicalPosition;
@@ -24,6 +27,18 @@ pub enum RecordDescriptor {
         compressed_length: u32,
         native_length: u32,
     },
+    /// Deduplicated data block: offsets stored in per-tape .data file,
+    /// actual block data lives in shared dedup.data.
+    DedupData {
+        /// Offset in per-tape .data file where the u64 offset array is stored.
+        offsets_offset: u64,
+        /// Number of 4KB dedup chunks.
+        num_chunks: u32,
+        /// Actual size of last chunk if < 4096; 0 means all chunks are full 4KB.
+        remainder: u16,
+        /// Original SCSI block size in bytes.
+        native_length: u32,
+    },
 }
 
 impl RecordDescriptor {
@@ -34,6 +49,7 @@ impl RecordDescriptor {
             RecordDescriptor::CompressedData {
                 compressed_length, ..
             } => *compressed_length,
+            RecordDescriptor::DedupData { num_chunks, .. } => num_chunks * 8,
             RecordDescriptor::Filemark => 0,
         }
     }
@@ -43,6 +59,7 @@ impl RecordDescriptor {
         match self {
             RecordDescriptor::Data { length, .. } => *length,
             RecordDescriptor::CompressedData { native_length, .. } => *native_length,
+            RecordDescriptor::DedupData { native_length, .. } => *native_length,
             RecordDescriptor::Filemark => 0,
         }
     }
@@ -51,7 +68,9 @@ impl RecordDescriptor {
     pub fn is_data(&self) -> bool {
         matches!(
             self,
-            RecordDescriptor::Data { .. } | RecordDescriptor::CompressedData { .. }
+            RecordDescriptor::Data { .. }
+                | RecordDescriptor::CompressedData { .. }
+                | RecordDescriptor::DedupData { .. }
         )
     }
 
@@ -235,6 +254,9 @@ pub fn read_media_detail(data_dir: &std::path::Path, barcode: &str) -> Option<Me
                     data_record_sizes.push(*length);
                 }
                 RecordDescriptor::CompressedData { native_length, .. } => {
+                    data_record_sizes.push(*native_length);
+                }
+                RecordDescriptor::DedupData { native_length, .. } => {
                     data_record_sizes.push(*native_length);
                 }
             }
@@ -436,14 +458,21 @@ pub struct DriveMediaState {
     pub media: TapeMedia,
     pub position: LogicalPosition,
     pub io_handle: crate::io_engine::IoHandle,
+    /// Shared dedup store for direct reads (pread, lock-free).
+    pub dedup_store: Option<Arc<DedupStore>>,
 }
 
 impl DriveMediaState {
-    pub fn new(media: TapeMedia, io_handle: crate::io_engine::IoHandle) -> Self {
+    pub fn new(
+        media: TapeMedia,
+        io_handle: crate::io_engine::IoHandle,
+        dedup_store: Option<Arc<DedupStore>>,
+    ) -> Self {
         Self {
             media,
             position: LogicalPosition::default(),
             io_handle,
+            dedup_store,
         }
     }
 

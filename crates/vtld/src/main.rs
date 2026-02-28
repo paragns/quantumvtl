@@ -11,6 +11,7 @@ use iscsi_target::SessionRegistry;
 use smc::MediaChanger;
 use smc::timing::RobotTimingModel;
 use ssc::TapeDrive;
+use ssc::media::dedup::DedupStore;
 use ssc::media::geometry::LtoGeneration;
 use vtld::admin::{AdminState, ConfigSnapshot, run_admin_server};
 use vtld::config::load_config;
@@ -91,11 +92,32 @@ async fn main() -> anyhow::Result<()> {
     let simulation_clock = Arc::new(SimulationClock::new(config.simulation_speed));
     info!("simulation speed: {}x", config.simulation_speed);
 
+    // Create shared dedup store if enabled
+    let dedup_store = if config.library.dedup {
+        info!(
+            cache_blocks = config.library.dedup_cache_blocks,
+            cache_mb = config.library.dedup_cache_blocks * 4096 / 1_000_000,
+            "dedup enabled, opening dedup store"
+        );
+        Some(Arc::new(
+            DedupStore::open(&data_dir, config.library.dedup_cache_blocks)
+                .expect("failed to open dedup store"),
+        ))
+    } else {
+        None
+    };
+
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
-        let drive = Arc::new(TapeDrive::new(&serial, LtoGeneration::Lto9, data_dir.clone(), simulation_clock.clone()));
+        let drive = Arc::new(TapeDrive::new(
+            &serial,
+            LtoGeneration::Lto9,
+            data_dir.clone(),
+            simulation_clock.clone(),
+            dedup_store.clone(),
+        ));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
     }

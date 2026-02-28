@@ -66,6 +66,7 @@ ip netns add "$NS_NAME"
 
 ip netns exec "$NS_NAME" ip link set lo up
 
+echo "==> Dedup mode: ${VTLD_DEDUP:-false}"
 echo "==> Starting vtld in network namespace..."
 VTLD_DATA_DIR=$(mktemp -d)
 mkdir -p "$VTLD_DATA_DIR/data"
@@ -90,6 +91,8 @@ library:
   data_dir: "$VTLD_DATA_DIR/data"
   drives: 2
   slots: 8
+  dedup: ${VTLD_DEDUP:-false}
+  dedup_cache_blocks: 4096
   media:
     - barcode: "TEST01L9"
       capacity_bytes: 18000000000000

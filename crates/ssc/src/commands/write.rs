@@ -13,30 +13,38 @@ use tracing::{trace, warn};
 /// and stored as `CompressedData` regardless of whether compression reduced
 /// the size. When DCE=0, blocks are stored as raw `Data`.
 ///
+/// When `dedup` is true, compression is skipped and the block is sent to the
+/// dedup store for block-level deduplication.
+///
 /// Returns `(descriptor, native_bytes, on_disk_bytes)`.
 fn write_block(
     io_handle: &crate::io_engine::IoHandle,
     block: &[u8],
     compress: bool,
+    dedup: bool,
     partition: u32,
     record_num: u64,
 ) -> Result<(RecordDescriptor, u64, u64), ScsiResult> {
     let native_len = block.len() as u32;
 
-    let (data, is_compressed) = if compress {
+    let (data, is_compressed, is_dedup) = if dedup {
+        // Dedup: send raw data, no compression (dedup on compressed data is ineffective)
+        (block.to_vec(), false, true)
+    } else if compress {
         let compressed = zstd::encode_all(block, -3).map_err(|e| {
             warn!(error = %e, "zstd compression failed");
             SenseBuilder::medium_error().to_check_condition()
         })?;
-        (compressed, true)
+        (compressed, true, false)
     } else {
-        (block.to_vec(), false)
+        (block.to_vec(), false, false)
     };
 
     let writes = vec![crate::io_engine::IoWrite {
         data,
         native_length: native_len,
         is_compressed,
+        is_dedup,
         partition,
         record_num,
     }];
@@ -71,6 +79,7 @@ pub fn handle_write_6(
     }
 
     let compression_enabled = media_state.media.compression_enabled;
+    let dedup_enabled = media_state.dedup_store.is_some();
     let pos = media_state.position.block_number as usize;
     let partition_idx = media_state.position.partition as u32;
 
@@ -104,7 +113,7 @@ pub fn handle_write_6(
 
                 let record_num = media_state.current_partition().records.len() as u64;
                 let (desc, native_bytes, on_disk_bytes) =
-                    match write_block(&media_state.io_handle, block, compression_enabled, partition_idx, record_num) {
+                    match write_block(&media_state.io_handle, block, compression_enabled, dedup_enabled, partition_idx, record_num) {
                         Ok(r) => r,
                         Err(scsi_err) => return scsi_err,
                     };
@@ -142,7 +151,7 @@ pub fn handle_write_6(
 
         let record_num = media_state.current_partition().records.len() as u64;
         let (desc, native_bytes, on_disk_bytes) =
-            match write_block(&media_state.io_handle, data_out, compression_enabled, partition_idx, record_num) {
+            match write_block(&media_state.io_handle, data_out, compression_enabled, dedup_enabled, partition_idx, record_num) {
                 Ok(r) => r,
                 Err(scsi_err) => return scsi_err,
             };
@@ -207,6 +216,16 @@ fn truncate_at_position(media_state: &mut DriveMediaState, pos: usize, partition
                             ..
                         } => {
                             let end = offset + *compressed_length as u64;
+                            if end > max_end {
+                                max_end = end;
+                            }
+                        }
+                        RecordDescriptor::DedupData {
+                            offsets_offset,
+                            num_chunks,
+                            ..
+                        } => {
+                            let end = offsets_offset + (*num_chunks as u64) * 8;
                             if end > max_end {
                                 max_end = end;
                             }
