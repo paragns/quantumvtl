@@ -4,3 +4,4 @@ pub mod mam;
 pub mod position;
 pub mod store;
 pub mod tape;
+pub mod writeback_cache;

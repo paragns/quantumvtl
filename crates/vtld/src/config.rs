@@ -80,8 +80,16 @@ fn default_db_path() -> String {
     "vtld.redb".to_owned()
 }
 
-fn default_dedup_cache_blocks() -> usize {
-    65536 // 256MB at 4KB per block
+fn default_dedup_shards() -> usize {
+    256
+}
+
+fn default_dedup_cache_bytes() -> usize {
+    1_073_741_824 // 1 GB
+}
+
+fn default_dedup_flush_workers() -> usize {
+    4
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,9 +104,15 @@ pub struct LibraryConfig {
     /// Enable block-level deduplication.
     #[serde(default)]
     pub dedup: bool,
-    /// Number of 4KB blocks to cache in memory for dedup reads (default: 65536 = 256MB).
-    #[serde(default = "default_dedup_cache_blocks")]
-    pub dedup_cache_blocks: usize,
+    /// Number of dedup shard files (1–256). Default: 256.
+    #[serde(default = "default_dedup_shards")]
+    pub dedup_shards: usize,
+    /// Write-back cache size in bytes. Default: 1 GB.
+    #[serde(default = "default_dedup_cache_bytes")]
+    pub dedup_cache_bytes: usize,
+    /// Number of background flush worker threads. Default: 4.
+    #[serde(default = "default_dedup_flush_workers")]
+    pub dedup_flush_workers: usize,
 }
 
 #[derive(Debug, Deserialize)]

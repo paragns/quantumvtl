@@ -25,7 +25,7 @@ use tracing::{trace, warn};
 use buffer::DriveBuffer;
 use commands::opcodes::*;
 use log_pages::{DriveStats, LogPageRegistry, SharedDriveStats};
-use media::dedup::DedupStore;
+use media::dedup::DedupPool;
 use media::geometry::LtoGeneration;
 use media::position;
 use media::store::TapeStore;
@@ -74,7 +74,7 @@ pub struct TapeDrive {
     /// Simulation clock for timing delays.
     clock: Arc<SimulationClock>,
     /// Shared dedup store (None if dedup is disabled).
-    dedup_store: Option<Arc<DedupStore>>,
+    dedup_store: Option<Arc<DedupPool>>,
 }
 
 impl TapeDrive {
@@ -83,7 +83,7 @@ impl TapeDrive {
         generation: LtoGeneration,
         data_dir: PathBuf,
         clock: Arc<SimulationClock>,
-        dedup_store: Option<Arc<DedupStore>>,
+        dedup_store: Option<Arc<DedupPool>>,
     ) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);

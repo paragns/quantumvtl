@@ -92,7 +92,9 @@ library:
   drives: 2
   slots: 8
   dedup: ${VTLD_DEDUP:-false}
-  dedup_cache_blocks: 4096
+  dedup_shards: 4
+  dedup_cache_bytes: 4194304
+  dedup_flush_workers: 2
   media:
     - barcode: "TEST01L9"
       capacity_bytes: 18000000000000

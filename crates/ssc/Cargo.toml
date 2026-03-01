@@ -13,7 +13,8 @@ tracing = "0.1"
 zstd = "0.13"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 dashmap = "6"
-lru = "0.12"
+fastrand = "2"
+indexmap = "2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use crate::media::dedup::{DedupStore, DEDUP_BLOCK_SIZE};
+use crate::media::dedup::{DedupPool, DEDUP_BLOCK_SIZE};
 use crate::media::mam::MamAttributes;
 use crate::media::store::TapeStore;
 use crate::media::tape::{RecordDescriptor, TapeMedia, TapePartition};
@@ -107,7 +107,7 @@ pub struct IoHandle {
 
 impl IoHandle {
     /// Spawn a new I/O thread owning the given TapeStore.
-    pub fn spawn(store: TapeStore, dedup_store: Option<Arc<DedupStore>>) -> Self {
+    pub fn spawn(store: TapeStore, dedup_store: Option<Arc<DedupPool>>) -> Self {
         let (tx, rx) = mpsc::sync_channel::<IoCommand>(64);
         let join_handle = thread::Builder::new()
             .name("tape-io".into())
@@ -310,7 +310,7 @@ impl Drop for IoHandle {
 }
 
 /// Main loop of the I/O thread.
-fn io_thread_main(mut store: TapeStore, dedup_store: Option<Arc<DedupStore>>, rx: Receiver<IoCommand>) {
+fn io_thread_main(mut store: TapeStore, dedup_store: Option<Arc<DedupPool>>, rx: Receiver<IoCommand>) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             IoCommand::WriteBatch { writes, reply } => {
@@ -381,7 +381,7 @@ fn io_thread_main(mut store: TapeStore, dedup_store: Option<Arc<DedupStore>>, rx
 /// Execute a batch of writes: append all data, then save all records.
 fn execute_write_batch(
     store: &mut TapeStore,
-    dedup_store: &Option<Arc<DedupStore>>,
+    dedup_store: &Option<Arc<DedupPool>>,
     writes: Vec<IoWrite>,
 ) -> io::Result<Vec<WriteResult>> {
     let mut results = Vec::with_capacity(writes.len());
@@ -392,7 +392,7 @@ fn execute_write_batch(
             // write packed offsets to tape's .data file.
             let ds = dedup_store
                 .as_ref()
-                .expect("is_dedup set but no DedupStore");
+                .expect("is_dedup set but no DedupPool");
 
             let num_chunks = (w.data.len() + DEDUP_BLOCK_SIZE - 1) / DEDUP_BLOCK_SIZE;
             let remainder = w.data.len() % DEDUP_BLOCK_SIZE;

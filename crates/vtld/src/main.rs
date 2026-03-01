@@ -11,7 +11,7 @@ use iscsi_target::SessionRegistry;
 use smc::MediaChanger;
 use smc::timing::RobotTimingModel;
 use ssc::TapeDrive;
-use ssc::media::dedup::DedupStore;
+use ssc::media::dedup::DedupPool;
 use ssc::media::geometry::LtoGeneration;
 use vtld::admin::{AdminState, ConfigSnapshot, run_admin_server};
 use vtld::config::load_config;
@@ -95,13 +95,19 @@ async fn main() -> anyhow::Result<()> {
     // Create shared dedup store if enabled
     let dedup_store = if config.library.dedup {
         info!(
-            cache_blocks = config.library.dedup_cache_blocks,
-            cache_mb = config.library.dedup_cache_blocks * 4096 / 1_000_000,
-            "dedup enabled, opening dedup store"
+            shards = config.library.dedup_shards,
+            cache_mb = config.library.dedup_cache_bytes / 1_048_576,
+            flush_workers = config.library.dedup_flush_workers,
+            "dedup enabled, opening dedup pool"
         );
         Some(Arc::new(
-            DedupStore::open(&data_dir, config.library.dedup_cache_blocks)
-                .expect("failed to open dedup store"),
+            DedupPool::open(
+                &data_dir,
+                config.library.dedup_shards,
+                config.library.dedup_cache_bytes,
+                config.library.dedup_flush_workers,
+            )
+            .expect("failed to open dedup pool"),
         ))
     } else {
         None

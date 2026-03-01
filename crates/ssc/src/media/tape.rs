@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::dedup::DedupStore;
+use super::dedup::DedupPool;
 use super::geometry::{LtoGeneration, TapeGeometry};
 use super::mam::MamAttributes;
 use super::position::LogicalPosition;
@@ -459,14 +459,14 @@ pub struct DriveMediaState {
     pub position: LogicalPosition,
     pub io_handle: crate::io_engine::IoHandle,
     /// Shared dedup store for direct reads (pread, lock-free).
-    pub dedup_store: Option<Arc<DedupStore>>,
+    pub dedup_store: Option<Arc<DedupPool>>,
 }
 
 impl DriveMediaState {
     pub fn new(
         media: TapeMedia,
         io_handle: crate::io_engine::IoHandle,
-        dedup_store: Option<Arc<DedupStore>>,
+        dedup_store: Option<Arc<DedupPool>>,
     ) -> Self {
         Self {
             media,
