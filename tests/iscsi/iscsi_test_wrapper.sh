@@ -137,7 +137,7 @@ timeout 360 ip netns exec "$NS_NAME" qemu-system-x86_64 \
     -kernel "$VM_DIR/vmlinuz" \
     -initrd "$VM_DIR/initrd.img" \
     -append "root=/dev/vda rw console=ttyS0 init=/init.sh panic=1 net.ifnames=0 biosdevname=0" \
-    -drive "file=$OVERLAY,format=qcow2,if=virtio" \
+    -drive "file=$OVERLAY,format=qcow2,if=virtio,cache=unsafe" \
     -netdev "user,id=net0,net=10.0.2.0/24,host=10.0.2.2,restrict=off" \
     -device "virtio-net-pci,netdev=net0" \
     -serial "file:$SERIAL_LOG" \
