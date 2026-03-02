@@ -115,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
+    let mut drive_serials: Vec<String> = Vec::new();
     for i in 0..config.library.drives {
         let serial = format!("DRIVE{:03}", i);
         let drive = Arc::new(TapeDrive::new(
@@ -126,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
         ));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);
+        drive_serials.push(serial);
     }
 
     // Spawn background buffer ticker per drive (4 Hz)
@@ -150,6 +152,7 @@ async fn main() -> anyhow::Result<()> {
         config.library.slots as u16,
         &media_barcodes,
         drive_notifiers,
+        drive_serials,
         RobotTimingModel::scalar_i6(),
         simulation_clock.clone(),
         Some(ws_tx.clone()),

@@ -4,15 +4,47 @@ use crate::sense::{self, SenseBuilder};
 use crate::state::{ChangerState, ELEM_DTE, ELEM_IEE, ELEM_MTE, ELEM_STE};
 use iscsi_target::ScsiResult;
 
+/// Build the DVCID (Device Identification) descriptor for a Data Transfer Element.
+///
+/// Returns the bytes to append after the base element descriptor.
+/// Format: Code Set (1) | Identifier Type (1) | Reserved (1) | Identifier Length (1) | Identifier
+///
+/// We use Code Set 0x02 (ASCII) and Identifier Type 0x00 (vendor-specific / serial only).
+/// The identifier is the drive's unit serial number, zero-padded to 10 characters
+/// (matching the SSC VPD page 80h format).
+///
+/// StorNext's XDI code for Spectra T-Series libraries uses `fs_scsi -f <serial>` to
+/// locate the corresponding /dev/sg* device from this serial number.
+fn build_dvcid_for_drive(drive_index: usize, drive_serials: &[String]) -> Vec<u8> {
+    let serial = drive_serials
+        .get(drive_index)
+        .map(|s| format!("{:0>10}", s))
+        .unwrap_or_else(|| format!("{:0>10}", "UNKNOWN"));
+    let serial_bytes = serial.as_bytes();
+
+    let mut dvcid = Vec::with_capacity(4 + serial_bytes.len());
+    dvcid.push(0x02); // Code Set = ASCII
+    dvcid.push(0x00); // Identifier Type = vendor-specific (serial number)
+    dvcid.push(0x00); // Reserved
+    dvcid.push(serial_bytes.len() as u8); // Identifier Length
+    dvcid.extend_from_slice(serial_bytes);
+    dvcid
+}
+
 /// Handle READ ELEMENT STATUS (B8h).
-pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
+pub fn handle_read_element_status(
+    cdb: &[u8],
+    st: &ChangerState,
+    drive_serials: &[String],
+) -> ScsiResult {
     let voltag = cdb[1] & 0x10 != 0;
-    let _dvcid = cdb[1] & 0x01 != 0;
+    let dvcid = cdb[6] & 0x01 != 0;
     let type_filter = cdb[1] & 0x0F;
     let start_addr = ((cdb[2] as u16) << 8) | cdb[3] as u16;
     let num_elements = ((cdb[4] as u16) << 8) | cdb[5] as u16;
-    let _curdata = cdb[6] & 0x01 != 0;
-    let alloc_len = ((cdb[7] as usize) << 16) | ((cdb[8] as usize) << 8) | (cdb[9] as usize);
+    let _curdata = cdb[6] & 0x02 != 0;
+    let alloc_len =
+        ((cdb[7] as usize) << 16) | ((cdb[8] as usize) << 8) | (cdb[9] as usize);
 
     if alloc_len == 0 {
         return SenseBuilder::invalid_field_in_cdb().to_check_condition();
@@ -24,10 +56,6 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
     } else {
         vec![type_filter]
     };
-
-    // Descriptor length depends on voltag
-    // Base: 12 bytes; with voltag: +40 = 52 bytes
-    let desc_len: u16 = if voltag { 52 } else { 16 };
 
     // Collect ALL elements with addr >= start_addr matching the type filter,
     // then limit to num_elements total.  The SCSI spec says num_elements is
@@ -62,6 +90,18 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
             continue;
         }
 
+        // Descriptor length depends on voltag and dvcid.
+        // Base: 12 bytes; with voltag: +40 = 52 bytes.
+        // DVCID adds 4 header bytes + identifier length, but only for DTE elements.
+        let dvcid_extra: u16 = if dvcid && etype == ELEM_DTE {
+            // 4 bytes DVCID header + 10 bytes serial (zero-padded to 10)
+            14
+        } else {
+            0
+        };
+        let base_len: u16 = if voltag { 52 } else { 12 };
+        let desc_len = base_len + dvcid_extra;
+
         // Page header (8 bytes)
         let num_desc = descriptors.len() as u16;
         let desc_bytes = num_desc as u32 * desc_len as u32;
@@ -92,9 +132,6 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
             }
             if elem.except {
                 flags |= 0x08; // EXCEPT
-            }
-            if elem.disabled {
-                // ED is in byte 9 bit 4, not here
             }
 
             // Type-specific flags in byte 2
@@ -167,6 +204,16 @@ pub fn handle_read_element_status(cdb: &[u8], st: &ChangerState) -> ScsiResult {
                 }
                 // Bytes 44-47: Reserved (already 0)
                 // Bytes 48-51: Reserved (already 0)
+            }
+
+            // DVCID: Device Identification descriptor for DTE elements
+            if dvcid && etype == ELEM_DTE {
+                let drive_index = (*addr - st.start_drive) as usize;
+                let dvcid_data = build_dvcid_for_drive(drive_index, drive_serials);
+                let dvcid_offset = base_len as usize;
+                let copy_len = dvcid_data.len().min(dvcid_extra as usize);
+                desc[dvcid_offset..dvcid_offset + copy_len]
+                    .copy_from_slice(&dvcid_data[..copy_len]);
             }
 
             report_data.extend_from_slice(&desc);

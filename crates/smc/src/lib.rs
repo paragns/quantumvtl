@@ -47,6 +47,8 @@ pub struct MediaChanger {
     state: Mutex<ChangerState>,
     /// Drive notification handles (indexed by drive number).
     drives: Vec<Arc<dyn MediaLoadNotify>>,
+    /// Drive serial numbers (indexed by drive number), for DVCID in READ ELEMENT STATUS.
+    drive_serials: Vec<String>,
     /// Mode page registry.
     mode_pages: ModePageRegistry,
     /// Log page registry.
@@ -69,14 +71,15 @@ impl MediaChanger {
         num_slots: u16,
         media_barcodes: &[String],
         drives: Vec<Arc<dyn MediaLoadNotify>>,
+        drive_serials: Vec<String>,
         timing: RobotTimingModel,
         clock: Arc<SimulationClock>,
         ws_tx: Option<broadcast::Sender<()>>,
     ) -> Self {
-        let vendor = "QUANTUM ";
+        let vendor = "SPECTRA ";
         let product = format!("{:<16}", model);
         let product = &product[..16];
-        let revision = "0100";
+        let revision = "2000";
 
         let mut inq = vec![0u8; 96];
         // Byte 0: Peripheral qualifier (0) | Device type (08h = Medium Changer)
@@ -134,6 +137,7 @@ impl MediaChanger {
             product: product.to_string(),
             state: Mutex::new(changer_state),
             drives,
+            drive_serials,
             mode_pages,
             log_pages,
             timing,
@@ -340,7 +344,11 @@ impl ScsiDevice for MediaChanger {
             MODE_SELECT_10 => commands::mode::handle_mode_select_10(cdb, data_out),
             LOG_SENSE => commands::log::handle_log_sense(cdb, &self.log_pages),
             READ_ELEMENT_STATUS => {
-                commands::element_status::handle_read_element_status(cdb, &st)
+                commands::element_status::handle_read_element_status(
+                    cdb,
+                    &st,
+                    &self.drive_serials,
+                )
             }
             _ => {
                 trace!(
