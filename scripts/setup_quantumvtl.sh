@@ -185,21 +185,40 @@ done
 HEALTH=$(curl -sf "http://127.0.0.1:${ADMIN_PORT}/api/health" || echo '{"status":"unreachable"}')
 log "Health: $HEALTH"
 
-# ── 10. Verify ────────────────────────────────────────────────────────────────
+# ── 10. Load st module ────────────────────────────────────────────────────────
+log "Loading st kernel module..."
+modprobe st
+echo "st" > /etc/modules-load.d/quantumvtl.conf
+
+# ── 11. Connect iSCSI initiator ───────────────────────────────────────────────
+log "Connecting iSCSI initiator..."
+systemctl enable --now iscsid
+
+# Clean up any stale sessions/nodes
+iscsiadm -m node --logout 2>/dev/null || true
+iscsiadm -m node -o delete 2>/dev/null || true
+
+# Discover and connect using only the TCP iface (avoids duplicate iser session)
+iscsiadm -m discovery -t st -p 127.0.0.1
+iscsiadm -m node -T "${ISCSI_IQN}" -p 127.0.0.1,3260 -I default --login
+
+# Remove iser node entry if created during discovery to prevent duplicate sessions
+iscsiadm -m node -T "${ISCSI_IQN}" -p 127.0.0.1,3260 -I iser -o delete 2>/dev/null || true
+
+sleep 2
+
+# ── 12. Verify ────────────────────────────────────────────────────────────────
 log ""
 log "=== QuantumVTL Status ==="
 systemctl status --no-pager quantumvtl.service | head -10
 echo ""
-log "=== Library ==="
-log "  Admin UI:      http://$(hostname -I | awk '{print $1}'):${ADMIN_PORT}"
-log "  iSCSI target:  $(hostname -I | awk '{print $1}'):${ISCSI_PORT}"
-log "  IQN:           ${ISCSI_IQN}"
-log "  Drives:        ${VTL_DRIVES}"
-log "  Tapes:         ${TAPE_COUNT} × ${TAPE_SIZE_MB} MB"
+log "=== SCSI Devices ==="
+lsscsi -g
 log ""
-log "=== Connect iSCSI initiator (from StorNext or test host) ==="
-log "  iscsiadm -m discovery -t st -p $(hostname -I | awk '{print $1}')"
-log "  iscsiadm -m node --login"
-log "  lsscsi -g     # verify tape devices appear"
+log "=== Library ==="
+log "  Admin UI:  http://127.0.0.1:${ADMIN_PORT}"
+log "  IQN:       ${ISCSI_IQN}"
+log "  Drives:    ${VTL_DRIVES}"
+log "  Tapes:     ${TAPE_COUNT} × ${TAPE_SIZE_MB} MB"
 log ""
 log "Setup complete."
