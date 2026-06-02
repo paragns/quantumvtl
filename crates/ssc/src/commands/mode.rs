@@ -1,7 +1,7 @@
 //! MODE SENSE and MODE SELECT command handlers.
 
 use crate::mode_pages::{ModePageRegistry, PageControl};
-use crate::sense::{self, SenseBuilder};
+use crate::sense;
 use crate::ScsiResult;
 
 /// Handle MODE SENSE(6) (1Ah).
@@ -26,10 +26,9 @@ pub fn handle_mode_sense_6(
     let page_data = if page_code == 0x3F {
         registry.get_all_pages(pc)
     } else {
-        match registry.get_page(page_code, subpage, pc) {
-            Some(data) => data,
-            None => return SenseBuilder::invalid_field_in_cdb().to_check_condition(),
-        }
+        // Return empty page data for unsupported pages so initiators can still
+        // read the write-protection bit from the header without failing.
+        registry.get_page(page_code, subpage, pc).unwrap_or_default()
     };
 
     // Build mode parameter header (4 bytes for MODE SENSE(6))
@@ -74,10 +73,7 @@ pub fn handle_mode_sense_10(
     let page_data = if page_code == 0x3F {
         registry.get_all_pages(pc)
     } else {
-        match registry.get_page(page_code, subpage, pc) {
-            Some(data) => data,
-            None => return SenseBuilder::invalid_field_in_cdb().to_check_condition(),
-        }
+        registry.get_page(page_code, subpage, pc).unwrap_or_default()
     };
 
     // Build mode parameter header (8 bytes for MODE SENSE(10))
