@@ -75,6 +75,8 @@ pub struct TapeDrive {
     clock: Arc<SimulationClock>,
     /// Shared dedup store (None if dedup is disabled).
     dedup_store: Option<Arc<DedupPool>>,
+    /// Per-media capacity overrides: barcode → capacity in bytes.
+    capacity_overrides: std::sync::Arc<std::collections::HashMap<String, u64>>,
 }
 
 impl TapeDrive {
@@ -84,6 +86,7 @@ impl TapeDrive {
         data_dir: PathBuf,
         clock: Arc<SimulationClock>,
         dedup_store: Option<Arc<DedupPool>>,
+        capacity_overrides: std::sync::Arc<std::collections::HashMap<String, u64>>,
     ) -> Self {
         let suffix = generation.product_suffix();
         let product = format!("ULT3580-{:<12}", suffix);
@@ -153,6 +156,7 @@ impl TapeDrive {
             timing: timing::TimingModel::default_for_generation(generation),
             clock,
             dedup_store,
+            capacity_overrides,
         }
     }
 
@@ -179,10 +183,9 @@ impl TapeDrive {
         let mut s = drive_stats.lock().unwrap();
         match media_state {
             Some(ms) => {
-                let geometry = generation.geometry();
                 s.media_loaded = true;
-                s.native_capacity_bytes = geometry.native_capacity_bytes;
-                s.buffer_size_bytes = geometry.buffer_size_bytes;
+                s.native_capacity_bytes = ms.media.native_capacity_bytes();
+                s.buffer_size_bytes = generation.geometry().buffer_size_bytes;
                 s.total_bytes_written_native = ms.media.total_native_bytes_written();
                 s.total_bytes_written_compressed = ms.media.total_compressed_bytes_written();
                 s.total_bytes_read_native = ms.media.total_native_bytes_read();
@@ -206,7 +209,7 @@ impl TapeDrive {
                     .iter()
                     .map(|p| {
                         let per_partition_cap =
-                            geometry.native_capacity_bytes / ms.media.partitions.len() as u64;
+                            ms.media.native_capacity_bytes() / ms.media.partitions.len() as u64;
                         per_partition_cap.saturating_sub(p.bytes_written_native)
                     })
                     .collect();
@@ -229,7 +232,7 @@ impl TapeDrive {
                 );
                 let phys = position::logical_to_physical(
                     bytes_before,
-                    ms.media.geometry.native_capacity_bytes,
+                    ms.media.native_capacity_bytes(),
                     ms.media.geometry,
                 );
                 let buf_snap = st.buffer.as_ref().map(|b| b.snapshot());
@@ -431,6 +434,10 @@ impl MediaLoadNotify for TapeDrive {
                 TapeMedia::new(barcode, self.generation)
             }
         };
+
+        if let Some(&cap) = self.capacity_overrides.get(barcode) {
+            media.capacity_override = Some(cap);
+        }
 
         media.record_load();
 

@@ -113,6 +113,16 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let capacity_overrides: std::sync::Arc<std::collections::HashMap<String, u64>> =
+        std::sync::Arc::new(
+            config
+                .library
+                .media
+                .iter()
+                .filter_map(|m| m.capacity_bytes.map(|c| (m.barcode.clone(), c)))
+                .collect(),
+        );
+
     let mut drive_notifiers: Vec<Arc<dyn iscsi_target::MediaLoadNotify>> = Vec::new();
     let mut drive_arcs: Vec<Arc<TapeDrive>> = Vec::new();
     let mut drive_serials: Vec<String> = Vec::new();
@@ -124,6 +134,7 @@ async fn main() -> anyhow::Result<()> {
             data_dir.clone(),
             simulation_clock.clone(),
             dedup_store.clone(),
+            capacity_overrides.clone(),
         ));
         drive_notifiers.push(drive.clone());
         drive_arcs.push(drive);

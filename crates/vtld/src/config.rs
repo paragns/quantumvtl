@@ -118,6 +118,8 @@ pub struct LibraryConfig {
 #[derive(Debug, Deserialize)]
 pub struct MediaConfig {
     pub barcode: String,
+    #[serde(default)]
+    pub capacity_bytes: Option<u64>,
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> Result<Config> {

@@ -153,6 +153,9 @@ pub struct TapeMedia {
     /// Reference to geometry constants (reconstructed from `generation` on deserialize).
     #[serde(skip, default = "default_geometry")]
     pub geometry: &'static TapeGeometry,
+    /// Custom capacity override in bytes. Overrides the LTO generation default when set.
+    #[serde(default)]
+    pub capacity_override: Option<u64>,
     /// Partitions (at least one; up to max_partitions).
     pub partitions: Vec<TapePartition>,
     /// Whether the cartridge is write-protected.
@@ -338,6 +341,7 @@ impl TapeMedia {
             barcode: barcode.to_string(),
             generation,
             geometry,
+            capacity_override: None,
             partitions: vec![TapePartition::new()],
             write_protected: false,
             worm: false,
@@ -364,9 +368,9 @@ impl TapeMedia {
         self.partitions.get_mut(index as usize)
     }
 
-    /// Native capacity of this cartridge in bytes (from LTO generation geometry).
+    /// Native capacity of this cartridge in bytes. Uses capacity_override when set.
     pub fn native_capacity_bytes(&self) -> u64 {
-        self.geometry.native_capacity_bytes
+        self.capacity_override.unwrap_or(self.geometry.native_capacity_bytes)
     }
 
     /// Approximate native bytes written across all partitions.
