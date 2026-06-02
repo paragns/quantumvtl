@@ -414,6 +414,7 @@ impl MediaLoadNotify for TapeDrive {
                     barcode: meta.barcode,
                     generation,
                     geometry,
+                    capacity_override: None,
                     partitions,
                     write_protected: meta.write_protected,
                     worm: meta.worm,
