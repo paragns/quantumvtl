@@ -27,7 +27,7 @@ TAPE_PREFIX="QVT"
 TAPE_SUFFIX="L9"
 VTL_DRIVES=4
 VTL_SLOTS=110
-LIBRARY_MODEL="Quantum Scalar i6"
+LIBRARY_MODEL="PYTHON"
 LIBRARY_SERIAL="AAAABBBB0001"
 ISCSI_IQN="iqn.2024-01.com.quantumvtl:vtl"
 ADMIN_PORT=8081
@@ -113,7 +113,7 @@ mkdir -p "$CONF_DIR" "$DATA_DIR"
 {
     cat <<EOF
 listen:
-  host: "0.0.0.0"
+  host: "127.0.0.1"
   admin_port: ${ADMIN_PORT}
 
 store:
