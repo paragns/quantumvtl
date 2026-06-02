@@ -1,7 +1,7 @@
 //! MODE SENSE and MODE SELECT command handlers.
 
 use crate::mode_pages::{ModePageRegistry, PageControl};
-use crate::sense;
+use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
 
 /// Handle MODE SENSE(6) (1Ah).
