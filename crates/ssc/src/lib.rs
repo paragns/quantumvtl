@@ -661,6 +661,7 @@ impl ScsiDevice for TapeDrive {
             SPACE_16 => commands::position::handle_space_16(cdb, media_state),
             READ_POSITION => commands::position::handle_read_position(cdb, media_state),
             READ_BLOCK_LIMITS => commands::position::handle_read_block_limits(media_state),
+            READ_BUFFER => commands::maintenance::handle_read_buffer(cdb),
             LOCATE_10 => {
                 if let Some(ref mut buf) = buffer {
                     buf.flush();

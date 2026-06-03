@@ -1,7 +1,57 @@
-//! Maintenance commands: REPORT SUPPORTED OPERATION CODES, TMF, TIMESTAMP — stubs.
+//! Maintenance commands: REPORT SUPPORTED OPERATION CODES, TMF, TIMESTAMP, READ BUFFER.
 
 use crate::sense::{self, SenseBuilder};
 use crate::ScsiResult;
+
+/// Handle READ BUFFER (3Ch) — returns drive buffer descriptor or data.
+/// StorNext uses this to verify drive buffer capability before writing.
+pub fn handle_read_buffer(cdb: &[u8]) -> ScsiResult {
+    let mode = cdb[1] & 0x1F;
+    let alloc_len = ((cdb[6] as usize) << 16) | ((cdb[7] as usize) << 8) | (cdb[8] as usize);
+
+    // Buffer capacity: 256 MB capped to 24-bit max (0xFFFFFF = ~16 MB)
+    // Report 16 MB — sufficient for StorNext compatibility check
+    const BUF_CAP: u32 = 0x00FF_FFFF; // 16,777,215 bytes
+
+    let mut data = match mode {
+        0x03 => {
+            // Descriptor mode: 4 bytes — offset boundary + 24-bit capacity
+            vec![
+                0x00,                          // offset boundary (no alignment required)
+                ((BUF_CAP >> 16) & 0xFF) as u8,
+                ((BUF_CAP >> 8) & 0xFF) as u8,
+                (BUF_CAP & 0xFF) as u8,
+            ]
+        }
+        0x00 => {
+            // Combined header + data: 4-byte header followed by zeroed buffer data
+            let mut d = vec![
+                0x00,
+                ((BUF_CAP >> 16) & 0xFF) as u8,
+                ((BUF_CAP >> 8) & 0xFF) as u8,
+                (BUF_CAP & 0xFF) as u8,
+            ];
+            let data_len = alloc_len.saturating_sub(4).min(BUF_CAP as usize);
+            d.extend(vec![0u8; data_len]);
+            d
+        }
+        0x02 => {
+            // Data only: return zeroed buffer contents
+            vec![0u8; alloc_len.min(BUF_CAP as usize)]
+        }
+        0x0B => {
+            // Echo buffer descriptor: 4 bytes
+            vec![0x00, 0x00, 0x01, 0x00] // 256-byte echo buffer
+        }
+        _ => {
+            // Unsupported mode — return empty response rather than failing
+            vec![0u8; 0]
+        }
+    };
+
+    data.truncate(alloc_len);
+    sense::good_with_data(data)
+}
 
 /// Handle MAINTENANCE IN (A3h) — service action dispatch.
 pub fn handle_maintenance_in(cdb: &[u8]) -> ScsiResult {

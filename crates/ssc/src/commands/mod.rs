@@ -18,6 +18,7 @@ pub mod opcodes {
     pub const REQUEST_SENSE: u8 = 0x03;
     pub const FORMAT_MEDIUM: u8 = 0x04;
     pub const READ_BLOCK_LIMITS: u8 = 0x05;
+    pub const READ_BUFFER: u8 = 0x3C;
     pub const READ_6: u8 = 0x08;
     pub const WRITE_6: u8 = 0x0A;
     pub const SET_CAPACITY: u8 = 0x0B;
